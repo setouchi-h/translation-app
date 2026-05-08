@@ -3,6 +3,20 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
+type TranslationStartRequest = {
+  inputDeviceId: string
+  targetLanguage: string
+}
+
+type TranslationSession = {
+  id: string
+  inputDeviceId: string
+  targetLanguage: string
+  startedAt: string
+}
+
+let activeSession: TranslationSession | null = null
+
 function createWindow(): void {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
@@ -49,8 +63,26 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // IPC test
-  ipcMain.on('ping', () => console.log('pong'))
+  ipcMain.handle('translation:start', (_event, request: TranslationStartRequest) => {
+    activeSession = {
+      id: crypto.randomUUID(),
+      inputDeviceId: request.inputDeviceId,
+      targetLanguage: request.targetLanguage,
+      startedAt: new Date().toISOString()
+    }
+
+    return activeSession
+  })
+
+  ipcMain.handle('translation:stop', () => {
+    const stoppedSession = activeSession
+    activeSession = null
+
+    return {
+      stopped: Boolean(stoppedSession),
+      stoppedAt: new Date().toISOString()
+    }
+  })
 
   createWindow()
 
