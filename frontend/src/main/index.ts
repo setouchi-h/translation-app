@@ -1,6 +1,8 @@
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { existsSync } from 'fs'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { config as loadEnvFile } from 'dotenv'
 import icon from '../../resources/icon.png?asset'
 import {
   RealtimeTranslationSession,
@@ -9,6 +11,19 @@ import {
 } from './realtimeTranslation'
 
 let activeTranslation: RealtimeTranslationSession | null = null
+
+function loadLocalEnv(): void {
+  const envPath = join(process.cwd(), '.env')
+  const localEnvPath = join(process.cwd(), '.env.local')
+
+  if (existsSync(envPath)) {
+    loadEnvFile({ path: envPath, override: false, quiet: true })
+  }
+
+  if (existsSync(localEnvPath)) {
+    loadEnvFile({ path: localEnvPath, override: true, quiet: true })
+  }
+}
 
 function createWindow(): void {
   // Create the browser window.
@@ -46,6 +61,8 @@ function createWindow(): void {
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
+  loadLocalEnv()
+
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 
