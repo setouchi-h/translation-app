@@ -2,6 +2,29 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 type CaptureStatus = 'idle' | 'loading-devices' | 'ready' | 'starting' | 'listening' | 'error'
 
+type LoadAudioInputsOptions = {
+  keepStatusText?: boolean
+}
+
+type Pcm16WorkletMessage = {
+  type: 'pcm16-chunk'
+  sequence: number
+  sampleRate: number
+  durationMs: number
+  pcm16Base64: string
+  byteLength: number
+  level: number
+}
+
+type TranslationEvent =
+  | { type: 'connected'; sessionId: string }
+  | { type: 'input-transcript-delta'; delta: string }
+  | { type: 'input-transcript-done' }
+  | { type: 'output-transcript-delta'; delta: string }
+  | { type: 'output-transcript-done' }
+  | { type: 'error'; message: string }
+  | { type: 'closed'; code: number; reason: string }
+
 const TARGET_LANGUAGES = [
   { value: 'ja', label: 'Japanese' },
   { value: 'en', label: 'English' },
@@ -22,7 +45,11 @@ function App(): React.JSX.Element {
   const [captions, setCaptions] = useState<string[]>([])
   const streamRef = useRef<MediaStream | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
+  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null)
+  const silentOutputRef = useRef<GainNode | null>(null)
   const animationFrameRef = useRef<number | null>(null)
+  const captionBufferRef = useRef('')
 
   const selectedInput = useMemo(
     () => audioInputs.find((input) => input.deviceId === selectedInputId),
@@ -30,28 +57,33 @@ function App(): React.JSX.Element {
   )
   const canStart = audioInputs.length > 0 && status !== 'loading-devices' && status !== 'starting'
 
-  const loadAudioInputs = useCallback(async (): Promise<void> => {
-    if (!navigator.mediaDevices?.enumerateDevices) {
-      setStatus('error')
-      setStatusText('Audio device enumeration is not available.')
-      return
-    }
+  const loadAudioInputs = useCallback(
+    async (options: LoadAudioInputsOptions = {}): Promise<void> => {
+      if (!navigator.mediaDevices?.enumerateDevices) {
+        setStatus('error')
+        setStatusText('Audio device enumeration is not available.')
+        return
+      }
 
-    setStatus((current) => (current === 'listening' ? current : 'loading-devices'))
+      setStatus((current) => (current === 'listening' ? current : 'loading-devices'))
 
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices()
-      const inputs = devices.filter((device) => device.kind === 'audioinput')
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const inputs = devices.filter((device) => device.kind === 'audioinput')
 
-      setAudioInputs(inputs)
-      setSelectedInputId((current) => current || inputs[0]?.deviceId || '')
-      setStatus((current) => (current === 'listening' ? current : 'ready'))
-      setStatusText(inputs.length > 0 ? 'Ready' : 'No audio input devices found.')
-    } catch (error) {
-      setStatus('error')
-      setStatusText(error instanceof Error ? error.message : 'Failed to read audio devices.')
-    }
-  }, [])
+        setAudioInputs(inputs)
+        setSelectedInputId((current) => current || inputs[0]?.deviceId || '')
+        setStatus((current) => (current === 'listening' ? current : 'ready'))
+        if (!options.keepStatusText) {
+          setStatusText(inputs.length > 0 ? 'Ready' : 'No audio input devices found.')
+        }
+      } catch (error) {
+        setStatus('error')
+        setStatusText(error instanceof Error ? error.message : 'Failed to read audio devices.')
+      }
+    },
+    []
+  )
 
   const stopAudioLevelLoop = useCallback((): void => {
     if (animationFrameRef.current !== null) {
@@ -62,6 +94,16 @@ function App(): React.JSX.Element {
 
   const stopCapture = useCallback(async (): Promise<void> => {
     stopAudioLevelLoop()
+
+    workletNodeRef.current?.port.close()
+    workletNodeRef.current?.disconnect()
+    workletNodeRef.current = null
+
+    silentOutputRef.current?.disconnect()
+    silentOutputRef.current = null
+
+    audioSourceRef.current?.disconnect()
+    audioSourceRef.current = null
 
     streamRef.current?.getTracks().forEach((track) => track.stop())
     streamRef.current = null
@@ -74,15 +116,51 @@ function App(): React.JSX.Element {
     setAudioLevel(0)
   }, [stopAudioLevelLoop])
 
-  const startAudioLevelMeter = (stream: MediaStream): void => {
+  const startAudioPipeline = async (stream: MediaStream): Promise<void> => {
     const audioContext = new AudioContext()
+    await audioContext.audioWorklet.addModule(new URL('./audio/pcm16-worklet.js', import.meta.url))
+
     const source = audioContext.createMediaStreamSource(stream)
     const analyser = audioContext.createAnalyser()
+    analyser.fftSize = 1024
     const data = new Uint8Array(analyser.fftSize)
 
-    analyser.fftSize = 1024
+    const workletNode = new AudioWorkletNode(audioContext, 'pcm16-chunk-processor', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      processorOptions: {
+        chunkMs: 100
+      }
+    })
+    const silentOutput = audioContext.createGain()
+    silentOutput.gain.value = 0
+
+    workletNode.port.onmessage = (event: MessageEvent<Pcm16WorkletMessage>) => {
+      if (event.data.type !== 'pcm16-chunk') {
+        return
+      }
+
+      window.api?.translation?.sendAudioChunk({
+        ...event.data,
+        inputDeviceId: selectedInputId || 'default',
+        targetLanguage
+      })
+    }
+
     source.connect(analyser)
+    source.connect(workletNode)
+    workletNode.connect(silentOutput)
+    silentOutput.connect(audioContext.destination)
+
+    audioSourceRef.current = source
+    workletNodeRef.current = workletNode
+    silentOutputRef.current = silentOutput
     audioContextRef.current = audioContext
+
+    if (audioContext.state === 'suspended') {
+      await audioContext.resume()
+    }
 
     const tick = (): void => {
       analyser.getByteTimeDomainData(data)
@@ -105,9 +183,13 @@ function App(): React.JSX.Element {
     }
 
     setStatus('starting')
-    setStatusText('Starting')
+    setStatusText('Connecting to OpenAI')
 
     try {
+      if (!window.api?.translation) {
+        throw new Error('Electron preload API is unavailable.')
+      }
+
       const audioConstraints: MediaTrackConstraints = {
         echoCancellation: false,
         noiseSuppression: false,
@@ -124,20 +206,22 @@ function App(): React.JSX.Element {
       })
 
       streamRef.current = stream
-      startAudioLevelMeter(stream)
+      captionBufferRef.current = ''
+      setCaptions([])
 
       await window.api.translation.start({
         inputDeviceId: selectedInputId || 'default',
         targetLanguage
       })
+      await startAudioPipeline(stream)
 
       setCaptions((current) => current.slice(-4))
       setStatus('listening')
       setStatusText(`Listening to ${selectedInput?.label || 'selected input'}`)
-      await loadAudioInputs()
+      await loadAudioInputs({ keepStatusText: true })
     } catch (error) {
       await stopCapture()
-      await window.api.translation.stop()
+      await window.api?.translation?.stop()
       setStatus('error')
       setStatusText(error instanceof Error ? error.message : 'Failed to start audio capture.')
     }
@@ -145,17 +229,58 @@ function App(): React.JSX.Element {
 
   const handleStop = async (): Promise<void> => {
     await stopCapture()
-    await window.api.translation.stop()
+    await window.api?.translation?.stop()
     setStatus('ready')
     setStatusText('Stopped')
   }
 
   useEffect(() => {
+    const unsubscribe =
+      window.api?.translation?.onEvent((event: TranslationEvent) => {
+        if (event.type === 'connected') {
+          setStatusText('Connected. Waiting for speech')
+          return
+        }
+
+        if (event.type === 'output-transcript-delta') {
+          const startsNewCaption = captionBufferRef.current.length === 0
+          captionBufferRef.current += event.delta
+
+          setCaptions((current) => {
+            if (startsNewCaption) {
+              return [...current.slice(-4), captionBufferRef.current]
+            }
+
+            return [...current.slice(0, -1), captionBufferRef.current]
+          })
+          return
+        }
+
+        if (event.type === 'output-transcript-done') {
+          captionBufferRef.current = ''
+          return
+        }
+
+        if (event.type === 'error') {
+          void stopCapture()
+          setStatus('error')
+          setStatusText(event.message)
+          return
+        }
+
+        if (event.type === 'closed') {
+          void stopCapture()
+          setStatus((current) => (current === 'listening' ? 'ready' : current))
+          setStatusText(event.reason ? `Disconnected: ${event.reason}` : 'Disconnected')
+        }
+      }) ?? (() => {})
+
     const timeoutId = window.setTimeout(() => {
       void loadAudioInputs()
     }, 0)
 
     return () => {
+      unsubscribe()
       window.clearTimeout(timeoutId)
       void stopCapture()
     }
@@ -201,7 +326,7 @@ function App(): React.JSX.Element {
         <button
           className="button secondary"
           type="button"
-          onClick={loadAudioInputs}
+          onClick={() => void loadAudioInputs()}
           disabled={status === 'loading-devices' || status === 'starting'}
         >
           Refresh

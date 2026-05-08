@@ -6,6 +6,27 @@ const api = {
   translation: {
     start: (request: { inputDeviceId: string; targetLanguage: string }) =>
       ipcRenderer.invoke('translation:start', request),
+    sendAudioChunk: (chunk: {
+      sequence: number
+      sampleRate: number
+      durationMs: number
+      pcm16Base64: string
+      byteLength: number
+      level: number
+      inputDeviceId: string
+      targetLanguage: string
+    }) => ipcRenderer.send('translation:audio-chunk', chunk),
+    onEvent: (callback: (event: unknown) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+        callback(payload)
+      }
+
+      ipcRenderer.on('translation:event', listener)
+
+      return () => {
+        ipcRenderer.removeListener('translation:event', listener)
+      }
+    },
     stop: () => ipcRenderer.invoke('translation:stop')
   }
 }

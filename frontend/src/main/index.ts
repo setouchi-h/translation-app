@@ -2,20 +2,13 @@ import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import {
+  RealtimeTranslationSession,
+  type TranslationAudioChunk,
+  type TranslationStartRequest
+} from './realtimeTranslation'
 
-type TranslationStartRequest = {
-  inputDeviceId: string
-  targetLanguage: string
-}
-
-type TranslationSession = {
-  id: string
-  inputDeviceId: string
-  targetLanguage: string
-  startedAt: string
-}
-
-let activeSession: TranslationSession | null = null
+let activeTranslation: RealtimeTranslationSession | null = null
 
 function createWindow(): void {
   // Create the browser window.
@@ -63,25 +56,36 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  ipcMain.handle('translation:start', (_event, request: TranslationStartRequest) => {
-    activeSession = {
-      id: crypto.randomUUID(),
-      inputDeviceId: request.inputDeviceId,
-      targetLanguage: request.targetLanguage,
-      startedAt: new Date().toISOString()
+  ipcMain.handle('translation:start', async (event, request: TranslationStartRequest) => {
+    if (activeTranslation) {
+      activeTranslation.stop()
+      activeTranslation = null
     }
 
-    return activeSession
+    activeTranslation = new RealtimeTranslationSession(request, event.sender)
+
+    try {
+      return await activeTranslation.start()
+    } catch (error) {
+      activeTranslation = null
+      throw error
+    }
+  })
+
+  ipcMain.on('translation:audio-chunk', (_event, chunk: TranslationAudioChunk) => {
+    activeTranslation?.sendAudioChunk(chunk)
   })
 
   ipcMain.handle('translation:stop', () => {
-    const stoppedSession = activeSession
-    activeSession = null
-
-    return {
-      stopped: Boolean(stoppedSession),
-      stoppedAt: new Date().toISOString()
+    const stoppedSession = activeTranslation?.stop() ?? {
+      stopped: false,
+      stoppedAt: new Date().toISOString(),
+      session: null
     }
+
+    activeTranslation = null
+
+    return stoppedSession
   })
 
   createWindow()
