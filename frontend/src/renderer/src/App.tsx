@@ -42,14 +42,16 @@ function App(): React.JSX.Element {
   const [status, setStatus] = useState<CaptureStatus>('idle')
   const [statusText, setStatusText] = useState('Ready')
   const [audioLevel, setAudioLevel] = useState(0)
-  const [captions, setCaptions] = useState<string[]>([])
+  const [sourceCaptions, setSourceCaptions] = useState<string[]>([])
+  const [translatedCaptions, setTranslatedCaptions] = useState<string[]>([])
   const streamRef = useRef<MediaStream | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
   const workletNodeRef = useRef<AudioWorkletNode | null>(null)
   const silentOutputRef = useRef<GainNode | null>(null)
   const animationFrameRef = useRef<number | null>(null)
-  const captionBufferRef = useRef('')
+  const sourceCaptionBufferRef = useRef('')
+  const translatedCaptionBufferRef = useRef('')
 
   const selectedInput = useMemo(
     () => audioInputs.find((input) => input.deviceId === selectedInputId),
@@ -206,8 +208,10 @@ function App(): React.JSX.Element {
       })
 
       streamRef.current = stream
-      captionBufferRef.current = ''
-      setCaptions([])
+      sourceCaptionBufferRef.current = ''
+      translatedCaptionBufferRef.current = ''
+      setSourceCaptions([])
+      setTranslatedCaptions([])
 
       await window.api.translation.start({
         inputDeviceId: selectedInputId || 'default',
@@ -215,7 +219,8 @@ function App(): React.JSX.Element {
       })
       await startAudioPipeline(stream)
 
-      setCaptions((current) => current.slice(-4))
+      setSourceCaptions((current) => current.slice(-4))
+      setTranslatedCaptions((current) => current.slice(-4))
       setStatus('listening')
       setStatusText(`Listening to ${selectedInput?.label || 'selected input'}`)
       await loadAudioInputs({ keepStatusText: true })
@@ -242,22 +247,41 @@ function App(): React.JSX.Element {
           return
         }
 
-        if (event.type === 'output-transcript-delta') {
-          const startsNewCaption = captionBufferRef.current.length === 0
-          captionBufferRef.current += event.delta
+        if (event.type === 'input-transcript-delta') {
+          const startsNewCaption = sourceCaptionBufferRef.current.length === 0
+          sourceCaptionBufferRef.current += event.delta
 
-          setCaptions((current) => {
+          setSourceCaptions((current) => {
             if (startsNewCaption) {
-              return [...current.slice(-4), captionBufferRef.current]
+              return [...current.slice(-4), sourceCaptionBufferRef.current]
             }
 
-            return [...current.slice(0, -1), captionBufferRef.current]
+            return [...current.slice(0, -1), sourceCaptionBufferRef.current]
+          })
+          return
+        }
+
+        if (event.type === 'input-transcript-done') {
+          sourceCaptionBufferRef.current = ''
+          return
+        }
+
+        if (event.type === 'output-transcript-delta') {
+          const startsNewCaption = translatedCaptionBufferRef.current.length === 0
+          translatedCaptionBufferRef.current += event.delta
+
+          setTranslatedCaptions((current) => {
+            if (startsNewCaption) {
+              return [...current.slice(-4), translatedCaptionBufferRef.current]
+            }
+
+            return [...current.slice(0, -1), translatedCaptionBufferRef.current]
           })
           return
         }
 
         if (event.type === 'output-transcript-done') {
-          captionBufferRef.current = ''
+          translatedCaptionBufferRef.current = ''
           return
         }
 
@@ -358,12 +382,27 @@ function App(): React.JSX.Element {
         </div>
       </section>
 
-      <section className="caption-stage" aria-label="Translated captions">
-        <div className="caption-current">{captions.at(-1) || 'No captions yet'}</div>
-        <div className="caption-history">
-          {captions.slice(0, -1).map((caption, index) => (
-            <p key={`${caption}-${index}`}>{caption}</p>
-          ))}
+      <section className="caption-stage" aria-label="Captions">
+        <div className="caption-panel caption-panel-source" aria-label="Original transcript">
+          <div className="caption-label">Original</div>
+          <div className="caption-current caption-current-source">
+            {sourceCaptions.at(-1) || 'No original transcript yet'}
+          </div>
+          <div className="caption-history">
+            {sourceCaptions.slice(0, -1).map((caption, index) => (
+              <p key={`${caption}-${index}`}>{caption}</p>
+            ))}
+          </div>
+        </div>
+
+        <div className="caption-panel caption-panel-translation" aria-label="Translated captions">
+          <div className="caption-label">Translation</div>
+          <div className="caption-current">{translatedCaptions.at(-1) || 'No translation yet'}</div>
+          <div className="caption-history">
+            {translatedCaptions.slice(0, -1).map((caption, index) => (
+              <p key={`${caption}-${index}`}>{caption}</p>
+            ))}
+          </div>
         </div>
       </section>
     </main>

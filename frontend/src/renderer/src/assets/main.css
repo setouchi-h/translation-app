@@ -174,33 +174,71 @@ select {
 }
 
 .caption-stage {
-  display: flex;
+  display: grid;
   min-height: 0;
   flex: 1;
-  flex-direction: column;
-  justify-content: center;
-  gap: 18px;
-  padding: 28px;
+  grid-template-rows: minmax(0, 0.8fr) minmax(0, 1fr);
+  gap: 16px;
+  overflow: hidden;
+  padding: 24px 28px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
   background: rgba(8, 10, 14, 0.78);
 }
 
+.caption-panel {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.caption-panel-source {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 16px;
+}
+
+.caption-label {
+  color: rgba(237, 242, 247, 0.48);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1;
+  text-align: center;
+  text-transform: uppercase;
+}
+
 .caption-current {
   color: rgba(255, 255, 255, 0.94);
-  font-size: 40px;
+  font-size: 38px;
   font-weight: 800;
   line-height: 1.25;
+  overflow: hidden;
   text-align: center;
   text-wrap: balance;
 }
 
+.caption-current-source {
+  color: rgba(237, 242, 247, 0.78);
+  font-size: 24px;
+  font-weight: 700;
+}
+
 .caption-history {
-  min-height: 72px;
+  min-height: 52px;
+  overflow: hidden;
   color: rgba(237, 242, 247, 0.54);
-  font-size: 17px;
+  font-size: 15px;
   line-height: 1.45;
   text-align: center;
+}
+
+.caption-panel-source .caption-history {
+  min-height: 40px;
+  color: rgba(237, 242, 247, 0.42);
+  font-size: 13px;
 }
 
 .caption-history p + p {
@@ -232,5 +270,9 @@ select {
 
   .caption-current {
     font-size: 30px;
+  }
+
+  .caption-current-source {
+    font-size: 21px;
   }
 }
