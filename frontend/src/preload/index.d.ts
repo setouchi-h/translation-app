@@ -33,6 +33,22 @@ type TranslationStopResult = {
   session: TranslationSession | null
 }
 
+type TextTranslationResult = {
+  text: string
+  model: string
+}
+
+type TextTranslationStreamRequest = {
+  requestId: number
+  text: string
+}
+
+type TextTranslationEvent =
+  | { type: 'started'; requestId: number; model: string }
+  | { type: 'delta'; requestId: number; delta: string }
+  | { type: 'done'; requestId: number; text: string; model: string }
+  | { type: 'error'; requestId: number; message: string }
+
 type TranslationEvent =
   | { type: 'connected'; sessionId: string }
   | { type: 'input-transcript-delta'; delta: string }
@@ -47,6 +63,10 @@ type AppAPI = {
     start: (request: TranslationStartRequest) => Promise<TranslationSession>
     sendAudioChunk: (chunk: TranslationAudioChunk) => void
     onEvent: (callback: (event: TranslationEvent) => void) => () => void
+    translateText: (request: { text: string }) => Promise<TextTranslationResult>
+    streamText: (request: TextTranslationStreamRequest) => void
+    cancelText: (request?: { requestId?: number }) => void
+    onTextEvent: (callback: (event: TextTranslationEvent) => void) => () => void
     stop: () => Promise<TranslationStopResult>
   }
 }

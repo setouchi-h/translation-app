@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 type CaptureStatus = 'idle' | 'loading-devices' | 'ready' | 'starting' | 'listening' | 'error'
 
+type TextTranslationStatus = 'idle' | 'waiting' | 'translating' | 'translated' | 'error'
+
 type LoadAudioInputsOptions = {
   keepStatusText?: boolean
 }
@@ -25,6 +27,12 @@ type TranslationEvent =
   | { type: 'error'; message: string }
   | { type: 'closed'; code: number; reason: string }
 
+type TextTranslationEvent =
+  | { type: 'started'; requestId: number; model: string }
+  | { type: 'delta'; requestId: number; delta: string }
+  | { type: 'done'; requestId: number; text: string; model: string }
+  | { type: 'error'; requestId: number; message: string }
+
 const TARGET_LANGUAGES = [
   { value: 'ja', label: 'Japanese' },
   { value: 'en', label: 'English' },
@@ -35,6 +43,8 @@ const TARGET_LANGUAGES = [
   { value: 'de', label: 'German' }
 ]
 
+const TEXT_TRANSLATION_DEBOUNCE_MS = 120
+
 function App(): React.JSX.Element {
   const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([])
   const [selectedInputId, setSelectedInputId] = useState('')
@@ -44,6 +54,11 @@ function App(): React.JSX.Element {
   const [audioLevel, setAudioLevel] = useState(0)
   const [sourceCaptions, setSourceCaptions] = useState<string[]>([])
   const [translatedCaptions, setTranslatedCaptions] = useState<string[]>([])
+  const [textInput, setTextInput] = useState('')
+  const [textTranslation, setTextTranslation] = useState('')
+  const [textTranslationStatus, setTextTranslationStatus] = useState<TextTranslationStatus>('idle')
+  const [textTranslationError, setTextTranslationError] = useState('')
+  const [isTextComposing, setIsTextComposing] = useState(false)
   const streamRef = useRef<MediaStream | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
@@ -52,12 +67,32 @@ function App(): React.JSX.Element {
   const animationFrameRef = useRef<number | null>(null)
   const sourceCaptionBufferRef = useRef('')
   const translatedCaptionBufferRef = useRef('')
+  const textTranslationRequestRef = useRef(0)
 
   const selectedInput = useMemo(
     () => audioInputs.find((input) => input.deviceId === selectedInputId),
     [audioInputs, selectedInputId]
   )
   const canStart = audioInputs.length > 0 && status !== 'loading-devices' && status !== 'starting'
+  const textTranslationDisplay = useMemo(() => {
+    if (textTranslation) {
+      return textTranslation
+    }
+
+    if (textTranslationStatus === 'error') {
+      return textTranslationError || 'Translation failed.'
+    }
+
+    if (textTranslationStatus === 'translating') {
+      return 'Translating...'
+    }
+
+    if (textTranslationStatus === 'waiting') {
+      return 'Waiting for input to settle...'
+    }
+
+    return 'English translation appears here'
+  }, [textTranslation, textTranslationError, textTranslationStatus])
 
   const loadAudioInputs = useCallback(
     async (options: LoadAudioInputsOptions = {}): Promise<void> => {
@@ -310,6 +345,104 @@ function App(): React.JSX.Element {
     }
   }, [loadAudioInputs, stopCapture])
 
+  useEffect(() => {
+    const unsubscribe =
+      window.api?.translation?.onTextEvent((event: TextTranslationEvent) => {
+        if (event.requestId !== textTranslationRequestRef.current) {
+          return
+        }
+
+        if (event.type === 'started') {
+          setTextTranslation('')
+          setTextTranslationError('')
+          setTextTranslationStatus('translating')
+          return
+        }
+
+        if (event.type === 'delta') {
+          setTextTranslation((current) => current + event.delta)
+          setTextTranslationStatus('translating')
+          return
+        }
+
+        if (event.type === 'done') {
+          setTextTranslation(event.text)
+          setTextTranslationStatus('translated')
+          return
+        }
+
+        if (event.type === 'error') {
+          setTextTranslation('')
+          setTextTranslationStatus('error')
+          setTextTranslationError(event.message)
+        }
+      }) ?? (() => {})
+
+    return () => {
+      unsubscribe()
+      window.api?.translation?.cancelText()
+    }
+  }, [])
+
+  useEffect(() => {
+    const requestId = textTranslationRequestRef.current + 1
+    textTranslationRequestRef.current = requestId
+    const trimmedInput = textInput.trim()
+    let stateTimeoutId: number | null = null
+    let streamTimeoutId: number | null = null
+
+    const scheduleStateUpdate = (update: () => void): void => {
+      stateTimeoutId = window.setTimeout(update, 0)
+    }
+
+    const cleanup = (): void => {
+      if (stateTimeoutId !== null) {
+        window.clearTimeout(stateTimeoutId)
+      }
+
+      if (streamTimeoutId !== null) {
+        window.clearTimeout(streamTimeoutId)
+      }
+
+      window.api?.translation?.cancelText({ requestId })
+    }
+
+    if (!trimmedInput) {
+      window.api?.translation?.cancelText()
+      scheduleStateUpdate(() => {
+        setTextTranslation('')
+        setTextTranslationError('')
+        setTextTranslationStatus('idle')
+      })
+      return cleanup
+    }
+
+    scheduleStateUpdate(() => {
+      setTextTranslationError('')
+      setTextTranslation('')
+      setTextTranslationStatus('waiting')
+    })
+
+    if (isTextComposing) {
+      window.api?.translation?.cancelText()
+      return cleanup
+    }
+
+    streamTimeoutId = window.setTimeout(() => {
+      if (!window.api?.translation?.streamText) {
+        setTextTranslation('')
+        setTextTranslationStatus('error')
+        setTextTranslationError('Electron preload API is unavailable.')
+        return
+      }
+
+      setTextTranslationStatus('translating')
+      window.api.translation.streamText({ requestId, text: textInput })
+    }, TEXT_TRANSLATION_DEBOUNCE_MS)
+
+    return cleanup
+  }, [isTextComposing, textInput])
+
   return (
     <main className="app-shell">
       <section className="control-bar" aria-label="Caption controls">
@@ -379,6 +512,29 @@ function App(): React.JSX.Element {
         </div>
         <div className="meter" aria-label="Input level">
           <div className="meter-fill" style={{ width: `${audioLevel}%` }} />
+        </div>
+      </section>
+
+      <section className="text-translator" aria-label="Japanese to English text translation">
+        <label className="text-pane" htmlFor="text-translation-input">
+          <span className="text-pane-label">Japanese</span>
+          <textarea
+            id="text-translation-input"
+            value={textInput}
+            onChange={(event) => setTextInput(event.target.value)}
+            onCompositionStart={() => setIsTextComposing(true)}
+            onCompositionEnd={(event) => {
+              setIsTextComposing(false)
+              setTextInput(event.currentTarget.value)
+            }}
+            placeholder="日本語の文章"
+            spellCheck={false}
+          />
+        </label>
+
+        <div className="text-pane text-pane-output" aria-live="polite">
+          <span className="text-pane-label">English</span>
+          <div className={`text-output ${textTranslationStatus}`}>{textTranslationDisplay}</div>
         </div>
       </section>
 

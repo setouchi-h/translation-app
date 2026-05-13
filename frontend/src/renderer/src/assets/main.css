@@ -4,14 +4,13 @@ body {
   min-width: 720px;
   min-height: 440px;
   overflow: hidden;
-  background:
-    linear-gradient(180deg, rgba(16, 18, 24, 0.96), rgba(11, 12, 16, 0.98)),
-    #101218;
+  background: linear-gradient(180deg, rgba(16, 18, 24, 0.96), rgba(11, 12, 16, 0.98)), #101218;
   user-select: none;
 }
 
 button,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -173,6 +172,80 @@ select {
   transition: width 80ms linear;
 }
 
+.text-translator {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  min-height: 178px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(27, 30, 38, 0.86);
+  user-select: text;
+}
+
+.text-pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.text-pane-label {
+  color: rgba(237, 242, 247, 0.56);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.text-pane textarea,
+.text-output {
+  flex: 1;
+  min-height: 126px;
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: #11141b;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 1.45;
+  overflow: auto;
+  padding: 12px;
+}
+
+.text-pane textarea {
+  resize: none;
+  outline: none;
+}
+
+.text-pane textarea:focus {
+  border-color: #4fb7a5;
+  box-shadow: 0 0 0 3px rgba(79, 183, 165, 0.16);
+}
+
+.text-pane textarea::placeholder {
+  color: rgba(237, 242, 247, 0.32);
+}
+
+.text-output {
+  white-space: pre-wrap;
+}
+
+.text-output.idle,
+.text-output.waiting,
+.text-output.translating {
+  color: rgba(237, 242, 247, 0.48);
+}
+
+.text-output.error {
+  border-color: rgba(222, 91, 80, 0.42);
+  color: #f0a19a;
+}
+
 .caption-stage {
   display: grid;
   min-height: 0;
@@ -266,6 +339,16 @@ select {
 
   .meter {
     width: 100%;
+  }
+
+  .text-translator {
+    grid-template-columns: 1fr;
+  }
+
+  .text-pane textarea,
+  .text-output {
+    min-height: 112px;
+    font-size: 16px;
   }
 
   .caption-current {

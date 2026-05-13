@@ -27,6 +27,23 @@ const api = {
         ipcRenderer.removeListener('translation:event', listener)
       }
     },
+    translateText: (request: { text: string }) =>
+      ipcRenderer.invoke('translation:translate-text', request),
+    streamText: (request: { requestId: number; text: string }) =>
+      ipcRenderer.send('translation:translate-text-stream', request),
+    cancelText: (request?: { requestId?: number }) =>
+      ipcRenderer.send('translation:cancel-text-translation', request),
+    onTextEvent: (callback: (event: unknown) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+        callback(payload)
+      }
+
+      ipcRenderer.on('translation:text-event', listener)
+
+      return () => {
+        ipcRenderer.removeListener('translation:text-event', listener)
+      }
+    },
     stop: () => ipcRenderer.invoke('translation:stop')
   }
 }

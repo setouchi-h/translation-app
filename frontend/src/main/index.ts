@@ -9,8 +9,40 @@ import {
   type TranslationAudioChunk,
   type TranslationStartRequest
 } from './realtimeTranslation'
+import {
+  translateJapaneseTextToEnglish,
+  streamJapaneseTextToEnglish,
+  type TextTranslationRequest,
+  type TextTranslationStreamRequest
+} from './textTranslation'
 
 let activeTranslation: RealtimeTranslationSession | null = null
+const activeTextTranslations = new Map<string, AbortController>()
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message
+  }
+
+  return String(error)
+}
+
+function getTextTranslationKey(webContentsId: number, requestId: number): string {
+  return `${webContentsId}:${requestId}`
+}
+
+function cancelTextTranslations(webContentsId: number, requestId?: number): void {
+  for (const [key, controller] of activeTextTranslations) {
+    const [keyWebContentsId, keyRequestId] = key.split(':').map(Number)
+    if (
+      keyWebContentsId === webContentsId &&
+      (requestId === undefined || keyRequestId === requestId)
+    ) {
+      controller.abort()
+      activeTextTranslations.delete(key)
+    }
+  }
+}
 
 function loadLocalEnv(): void {
   const envPath = join(process.cwd(), '.env')
@@ -103,6 +135,47 @@ app.whenReady().then(() => {
     activeTranslation = null
 
     return stoppedSession
+  })
+
+  ipcMain.handle('translation:translate-text', (_event, request: TextTranslationRequest) => {
+    return translateJapaneseTextToEnglish(request)
+  })
+
+  ipcMain.on(
+    'translation:translate-text-stream',
+    (event, request: TextTranslationStreamRequest) => {
+      cancelTextTranslations(event.sender.id)
+
+      const controller = new AbortController()
+      const key = getTextTranslationKey(event.sender.id, request.requestId)
+      activeTextTranslations.set(key, controller)
+
+      void streamJapaneseTextToEnglish(
+        request,
+        (payload) => {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('translation:text-event', payload)
+          }
+        },
+        controller.signal
+      )
+        .catch((error) => {
+          if (!controller.signal.aborted && !event.sender.isDestroyed()) {
+            event.sender.send('translation:text-event', {
+              type: 'error',
+              requestId: request.requestId,
+              message: getErrorMessage(error)
+            })
+          }
+        })
+        .finally(() => {
+          activeTextTranslations.delete(key)
+        })
+    }
+  )
+
+  ipcMain.on('translation:cancel-text-translation', (event, request?: { requestId?: number }) => {
+    cancelTextTranslations(event.sender.id, request?.requestId)
   })
 
   createWindow()
