@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 type CaptureStatus = 'idle' | 'loading-devices' | 'ready' | 'starting' | 'listening' | 'error'
 
@@ -45,6 +45,14 @@ const TARGET_LANGUAGES = [
 
 const TEXT_TRANSLATION_DEBOUNCE_MS = 120
 
+function scrollCaptionToEnd(element: HTMLDivElement | null): void {
+  if (!element) {
+    return
+  }
+
+  element.scrollTop = element.scrollHeight
+}
+
 function App(): React.JSX.Element {
   const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([])
   const [selectedInputId, setSelectedInputId] = useState('')
@@ -67,12 +75,16 @@ function App(): React.JSX.Element {
   const animationFrameRef = useRef<number | null>(null)
   const sourceCaptionBufferRef = useRef('')
   const translatedCaptionBufferRef = useRef('')
+  const sourceCaptionCurrentRef = useRef<HTMLDivElement | null>(null)
+  const translatedCaptionCurrentRef = useRef<HTMLDivElement | null>(null)
   const textTranslationRequestRef = useRef(0)
 
   const selectedInput = useMemo(
     () => audioInputs.find((input) => input.deviceId === selectedInputId),
     [audioInputs, selectedInputId]
   )
+  const currentSourceCaption = sourceCaptions.at(-1) || 'No original transcript yet'
+  const currentTranslatedCaption = translatedCaptions.at(-1) || 'No translation yet'
   const canStart = audioInputs.length > 0 && status !== 'loading-devices' && status !== 'starting'
   const textTranslationDisplay = useMemo(() => {
     if (textTranslation) {
@@ -443,6 +455,14 @@ function App(): React.JSX.Element {
     return cleanup
   }, [isTextComposing, textInput])
 
+  useLayoutEffect(() => {
+    scrollCaptionToEnd(sourceCaptionCurrentRef.current)
+  }, [currentSourceCaption])
+
+  useLayoutEffect(() => {
+    scrollCaptionToEnd(translatedCaptionCurrentRef.current)
+  }, [currentTranslatedCaption])
+
   return (
     <main className="app-shell">
       <section className="control-bar" aria-label="Caption controls">
@@ -541,8 +561,8 @@ function App(): React.JSX.Element {
       <section className="caption-stage" aria-label="Captions">
         <div className="caption-panel caption-panel-source" aria-label="Original transcript">
           <div className="caption-label">Original</div>
-          <div className="caption-current caption-current-source">
-            {sourceCaptions.at(-1) || 'No original transcript yet'}
+          <div ref={sourceCaptionCurrentRef} className="caption-current caption-current-source">
+            {currentSourceCaption}
           </div>
           <div className="caption-history">
             {sourceCaptions.slice(0, -1).map((caption, index) => (
@@ -553,7 +573,9 @@ function App(): React.JSX.Element {
 
         <div className="caption-panel caption-panel-translation" aria-label="Translated captions">
           <div className="caption-label">Translation</div>
-          <div className="caption-current">{translatedCaptions.at(-1) || 'No translation yet'}</div>
+          <div ref={translatedCaptionCurrentRef} className="caption-current">
+            {currentTranslatedCaption}
+          </div>
           <div className="caption-history">
             {translatedCaptions.slice(0, -1).map((caption, index) => (
               <p key={`${caption}-${index}`}>{caption}</p>
