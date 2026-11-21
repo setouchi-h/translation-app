@@ -172,6 +172,39 @@ textarea {
   transition: width 80ms linear;
 }
 
+.saving-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.saving-indicator::before {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #de5b50;
+  content: '';
+}
+
+.save-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  color: rgba(255, 255, 255, 0.76);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.save-toggle input:disabled + span {
+  opacity: 0.45;
+}
+
 .text-translator {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

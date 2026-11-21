@@ -1,8 +1,9 @@
-import type { WebContents } from 'electron'
 import WebSocket, { type RawData } from 'ws'
 
 const TRANSLATION_WEBSOCKET_URL =
   'wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate'
+// `session.closed` took about 5 s to arrive in testing, even after plain silence.
+const STOP_DRAIN_TIMEOUT_MS = 8000
 
 export type TranslationStartRequest = {
   inputDeviceId: string
@@ -37,18 +38,22 @@ export type TranslationStopResult = {
   session: TranslationSession | null
 }
 
-type TranslationRendererEvent =
+export type TranslationRendererEvent =
   | { type: 'connected'; sessionId: string }
-  | { type: 'input-transcript-delta'; delta: string }
+  | { type: 'input-transcript-delta'; delta: string; elapsedMs?: number }
+  | { type: 'input-transcript-snapshot'; text: string }
   | { type: 'input-transcript-done' }
-  | { type: 'output-transcript-delta'; delta: string }
+  | { type: 'output-transcript-delta'; delta: string; elapsedMs?: number }
+  | { type: 'output-transcript-snapshot'; text: string }
   | { type: 'output-transcript-done' }
+  | { type: 'warning'; message: string }
   | { type: 'error'; message: string }
   | { type: 'closed'; code: number; reason: string }
 
 type RealtimeServerEvent = {
   type?: string
   delta?: unknown
+  elapsed_ms?: unknown
   error?: {
     message?: unknown
     code?: unknown
@@ -74,11 +79,12 @@ function parseRealtimeMessage(data: RawData): RealtimeServerEvent | null {
 export class RealtimeTranslationSession {
   private socket: WebSocket | null = null
   private clientClosed = false
+  private resolveClosed: (() => void) | null = null
   private readonly session: TranslationSession
 
   constructor(
     request: TranslationStartRequest,
-    private readonly renderer: WebContents
+    private readonly emit: (event: TranslationRendererEvent) => void
   ) {
     this.session = {
       id: crypto.randomUUID(),
@@ -144,20 +150,40 @@ export class RealtimeTranslationSession {
     this.session.lastAudioLevel = chunk.level
   }
 
-  stop(): TranslationStopResult {
-    const session = this.session
+  async stop(): Promise<TranslationStopResult> {
+    const socket = this.socket
     this.clientClosed = true
+    this.socket = null
 
-    if (this.socket && this.socket.readyState !== WebSocket.CLOSED) {
-      this.socket.close(1000, 'client-stop')
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      const closed = new Promise<void>((resolve) => {
+        this.resolveClosed = resolve
+      })
+
+      // `session.close` makes the service flush pending audio and emit the remaining
+      // transcript before `session.closed`; closing the socket right away would drop it.
+      socket.send(JSON.stringify({ type: 'session.close' }))
+
+      let timeout: NodeJS.Timeout | null = null
+      await Promise.race([
+        closed,
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(resolve, STOP_DRAIN_TIMEOUT_MS)
+        })
+      ])
+      if (timeout) {
+        clearTimeout(timeout)
+      }
     }
 
-    this.socket = null
+    if (socket && socket.readyState !== WebSocket.CLOSED) {
+      socket.close(1000, 'client-stop')
+    }
 
     return {
       stopped: true,
       stoppedAt: new Date().toISOString(),
-      session
+      session: this.session
     }
   }
 
@@ -176,6 +202,8 @@ export class RealtimeTranslationSession {
     })
 
     socket.on('close', (code, reason) => {
+      this.resolveClosed?.()
+
       if (!this.clientClosed) {
         this.emit({ type: 'closed', code, reason: reason.toString() })
       }
@@ -222,8 +250,10 @@ export class RealtimeTranslationSession {
   }
 
   private handleRealtimeEvent(event: RealtimeServerEvent): void {
+    const elapsedMs = typeof event.elapsed_ms === 'number' ? event.elapsed_ms : undefined
+
     if (event.type === 'session.output_transcript.delta' && typeof event.delta === 'string') {
-      this.emit({ type: 'output-transcript-delta', delta: event.delta })
+      this.emit({ type: 'output-transcript-delta', delta: event.delta, elapsedMs })
       return
     }
 
@@ -233,12 +263,17 @@ export class RealtimeTranslationSession {
     }
 
     if (event.type === 'session.input_transcript.delta' && typeof event.delta === 'string') {
-      this.emit({ type: 'input-transcript-delta', delta: event.delta })
+      this.emit({ type: 'input-transcript-delta', delta: event.delta, elapsedMs })
       return
     }
 
     if (event.type === 'session.input_transcript.done') {
       this.emit({ type: 'input-transcript-done' })
+      return
+    }
+
+    if (event.type === 'session.closed') {
+      this.resolveClosed?.()
       return
     }
 
@@ -250,12 +285,6 @@ export class RealtimeTranslationSession {
             ? event.error.message
             : 'OpenAI Realtime Translation returned an error.'
       })
-    }
-  }
-
-  private emit(event: TranslationRendererEvent): void {
-    if (!this.renderer.isDestroyed()) {
-      this.renderer.send('translation:event', event)
     }
   }
 }
