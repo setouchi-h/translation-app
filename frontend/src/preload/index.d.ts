@@ -46,13 +46,19 @@ type TextTranslationEvent =
   | { type: 'done'; requestId: number; text: string; model: string }
   | { type: 'error'; requestId: number; message: string }
 
+/** Present when the provider splits speech into utterances (Soniox). */
+type CaptionUtteranceRef = {
+  utteranceId?: number
+  speaker?: string | null
+}
+
 type TranslationEvent =
   | { type: 'connected'; sessionId: string }
   | { type: 'input-transcript-delta'; delta: string }
-  | { type: 'input-transcript-snapshot'; text: string }
+  | ({ type: 'input-transcript-snapshot'; text: string } & CaptionUtteranceRef)
   | { type: 'input-transcript-done' }
   | { type: 'output-transcript-delta'; delta: string }
-  | { type: 'output-transcript-snapshot'; text: string }
+  | ({ type: 'output-transcript-snapshot'; text: string } & CaptionUtteranceRef)
   | { type: 'output-transcript-done' }
   | { type: 'warning'; message: string }
   | { type: 'error'; message: string }
