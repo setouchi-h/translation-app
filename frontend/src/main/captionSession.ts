@@ -66,9 +66,21 @@ export class CaptionSession {
 
     if (provider === 'soniox') {
       this.soniox = new SonioxTranscriptionSession(request.targetLanguage, {
-        onLiveText: (text) => this.emit({ type: 'input-transcript-snapshot', text }),
+        onLiveText: (text, utterance) =>
+          this.emit({
+            type: 'input-transcript-snapshot',
+            text,
+            utteranceId: utterance.id,
+            speaker: utterance.speaker
+          }),
         onSourceEnded: () => this.emit({ type: 'input-transcript-done' }),
-        onLiveTranslation: (text) => this.emit({ type: 'output-transcript-snapshot', text }),
+        onLiveTranslation: (text, utterance) =>
+          this.emit({
+            type: 'output-transcript-snapshot',
+            text,
+            utteranceId: utterance.id,
+            speaker: utterance.speaker
+          }),
         onTranslationEnded: () => this.emit({ type: 'output-transcript-done' }),
         onUtterance: (utterance) => this.recordUtterance(utterance),
         onError: (message) => this.emit({ type: 'error', message: `Soniox: ${message}` }),

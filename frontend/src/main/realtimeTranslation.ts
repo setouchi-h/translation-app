@@ -38,13 +38,19 @@ export type TranslationStopResult = {
   session: TranslationSession | null
 }
 
+/** Which utterance a snapshot belongs to, when the provider splits speech into utterances. */
+export type CaptionUtteranceRef = {
+  utteranceId: number
+  speaker: string | null
+}
+
 export type TranslationRendererEvent =
   | { type: 'connected'; sessionId: string }
   | { type: 'input-transcript-delta'; delta: string; elapsedMs?: number }
-  | { type: 'input-transcript-snapshot'; text: string }
+  | ({ type: 'input-transcript-snapshot'; text: string } & Partial<CaptionUtteranceRef>)
   | { type: 'input-transcript-done' }
   | { type: 'output-transcript-delta'; delta: string; elapsedMs?: number }
-  | { type: 'output-transcript-snapshot'; text: string }
+  | ({ type: 'output-transcript-snapshot'; text: string } & Partial<CaptionUtteranceRef>)
   | { type: 'output-transcript-done' }
   | { type: 'warning'; message: string }
   | { type: 'error'; message: string }

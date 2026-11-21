@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { CaptionTimeline, type CaptionEntry } from './components/CaptionTimeline'
 
 type CaptureStatus = 'idle' | 'loading-devices' | 'ready' | 'starting' | 'listening' | 'error'
 
@@ -21,10 +22,20 @@ type Pcm16WorkletMessage = {
 type TranslationEvent =
   | { type: 'connected'; sessionId: string }
   | { type: 'input-transcript-delta'; delta: string }
-  | { type: 'input-transcript-snapshot'; text: string }
+  | {
+      type: 'input-transcript-snapshot'
+      text: string
+      utteranceId?: number
+      speaker?: string | null
+    }
   | { type: 'input-transcript-done' }
   | { type: 'output-transcript-delta'; delta: string }
-  | { type: 'output-transcript-snapshot'; text: string }
+  | {
+      type: 'output-transcript-snapshot'
+      text: string
+      utteranceId?: number
+      speaker?: string | null
+    }
   | { type: 'output-transcript-done' }
   | { type: 'warning'; message: string }
   | { type: 'error'; message: string }
@@ -57,12 +68,52 @@ function loadSaveTranscriptPreference(): boolean {
   }
 }
 
-function scrollCaptionToEnd(element: HTMLDivElement | null): void {
-  if (!element) {
-    return
+const SHOW_SOURCE_STORAGE_KEY = 'showOriginal'
+
+function loadShowSourcePreference(): boolean {
+  try {
+    return window.localStorage.getItem(SHOW_SOURCE_STORAGE_KEY) !== 'false'
+  } catch {
+    return true
+  }
+}
+
+type CaptionStream = 'source' | 'translation'
+
+/**
+ * Numbers the segments of a stream that carries no utterance ids. The nth source segment
+ * and the nth translation segment get the same key, which pairs them into one entry.
+ */
+type SegmentCounter = { index: number; open: boolean }
+
+function segmentKey(counter: SegmentCounter): string {
+  counter.open = true
+  return `s${counter.index}`
+}
+
+function closeSegment(counter: SegmentCounter): void {
+  if (counter.open) {
+    counter.open = false
+    counter.index += 1
+  }
+}
+
+function updateCaptionEntry(
+  entries: CaptionEntry[],
+  key: string,
+  startedAt: number,
+  update: (entry: CaptionEntry) => CaptionEntry
+): CaptionEntry[] {
+  // The entry being updated is almost always one of the last few.
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    if (entries[index].key === key) {
+      const next = entries.slice()
+      next[index] = update(entries[index])
+      return next
+    }
   }
 
-  element.scrollTop = element.scrollHeight
+  return [...entries, update({ key, speaker: null, source: '', translation: '', startedAt })]
 }
 
 function App(): React.JSX.Element {
@@ -74,8 +125,8 @@ function App(): React.JSX.Element {
   const [audioLevel, setAudioLevel] = useState(0)
   const [saveTranscript, setSaveTranscript] = useState(loadSaveTranscriptPreference)
   const [isSavingTranscript, setIsSavingTranscript] = useState(false)
-  const [sourceCaptions, setSourceCaptions] = useState<string[]>([])
-  const [translatedCaptions, setTranslatedCaptions] = useState<string[]>([])
+  const [captionEntries, setCaptionEntries] = useState<CaptionEntry[]>([])
+  const [showSource, setShowSource] = useState(loadShowSourcePreference)
   const [textInput, setTextInput] = useState('')
   const [textTranslation, setTextTranslation] = useState('')
   const [textTranslationStatus, setTextTranslationStatus] = useState<TextTranslationStatus>('idle')
@@ -87,18 +138,16 @@ function App(): React.JSX.Element {
   const workletNodeRef = useRef<AudioWorkletNode | null>(null)
   const silentOutputRef = useRef<GainNode | null>(null)
   const animationFrameRef = useRef<number | null>(null)
-  const sourceCaptionBufferRef = useRef('')
-  const translatedCaptionBufferRef = useRef('')
-  const sourceCaptionCurrentRef = useRef<HTMLDivElement | null>(null)
-  const translatedCaptionCurrentRef = useRef<HTMLDivElement | null>(null)
+  const segmentCountersRef = useRef<Record<CaptionStream, SegmentCounter>>({
+    source: { index: 0, open: false },
+    translation: { index: 0, open: false }
+  })
   const textTranslationRequestRef = useRef(0)
 
   const selectedInput = useMemo(
     () => audioInputs.find((input) => input.deviceId === selectedInputId),
     [audioInputs, selectedInputId]
   )
-  const currentSourceCaption = sourceCaptions.at(-1) || 'No original transcript yet'
-  const currentTranslatedCaption = translatedCaptions.at(-1) || 'No translation yet'
   const canStart = audioInputs.length > 0 && status !== 'loading-devices' && status !== 'starting'
   const textTranslationDisplay = useMemo(() => {
     if (textTranslation) {
@@ -269,10 +318,11 @@ function App(): React.JSX.Element {
       })
 
       streamRef.current = stream
-      sourceCaptionBufferRef.current = ''
-      translatedCaptionBufferRef.current = ''
-      setSourceCaptions([])
-      setTranslatedCaptions([])
+      segmentCountersRef.current = {
+        source: { index: 0, open: false },
+        translation: { index: 0, open: false }
+      }
+      setCaptionEntries([])
 
       const session = await window.api.translation.start({
         inputDeviceId: selectedInputId || 'default',
@@ -282,8 +332,6 @@ function App(): React.JSX.Element {
       setIsSavingTranscript(session.transcriptPath !== null)
       await startAudioPipeline(stream)
 
-      setSourceCaptions((current) => current.slice(-4))
-      setTranslatedCaptions((current) => current.slice(-4))
       setStatus('listening')
       setStatusText(`Listening to ${selectedInput?.label || 'selected input'}`)
       await loadAudioInputs({ keepStatusText: true })
@@ -315,6 +363,15 @@ function App(): React.JSX.Element {
     }
   }
 
+  const handleShowSourceChange = (enabled: boolean): void => {
+    setShowSource(enabled)
+    try {
+      window.localStorage.setItem(SHOW_SOURCE_STORAGE_KEY, String(enabled))
+    } catch {
+      // The preference just won't persist.
+    }
+  }
+
   const handleOpenTranscripts = async (): Promise<void> => {
     const errorMessage = await window.api?.transcripts?.openFolder()
     if (errorMessage) {
@@ -330,74 +387,42 @@ function App(): React.JSX.Element {
           return
         }
 
-        if (event.type === 'input-transcript-delta') {
-          const startsNewCaption = sourceCaptionBufferRef.current.length === 0
-          sourceCaptionBufferRef.current += event.delta
+        if (
+          event.type === 'input-transcript-delta' ||
+          event.type === 'input-transcript-snapshot' ||
+          event.type === 'output-transcript-delta' ||
+          event.type === 'output-transcript-snapshot'
+        ) {
+          const stream: CaptionStream = event.type.startsWith('input') ? 'source' : 'translation'
+          const utterance = 'utteranceId' in event ? event : null
+          const key =
+            utterance?.utteranceId !== undefined
+              ? `u${utterance.utteranceId}`
+              : segmentKey(segmentCountersRef.current[stream])
+          const startedAt = Date.now()
 
-          setSourceCaptions((current) => {
-            if (startsNewCaption) {
-              return [...current.slice(-4), sourceCaptionBufferRef.current]
-            }
-
-            return [...current.slice(0, -1), sourceCaptionBufferRef.current]
-          })
-          return
-        }
-
-        if (event.type === 'input-transcript-snapshot') {
-          const startsNewCaption = sourceCaptionBufferRef.current.length === 0
-          sourceCaptionBufferRef.current = event.text
-
-          setSourceCaptions((current) => {
-            if (startsNewCaption) {
-              return [...current.slice(-4), event.text]
-            }
-
-            return [...current.slice(0, -1), event.text]
-          })
+          setCaptionEntries((current) =>
+            updateCaptionEntry(current, key, startedAt, (entry) => ({
+              ...entry,
+              speaker: utterance?.speaker ?? entry.speaker,
+              [stream]: 'delta' in event ? entry[stream] + event.delta : event.text
+            }))
+          )
           return
         }
 
         if (event.type === 'input-transcript-done') {
-          sourceCaptionBufferRef.current = ''
+          closeSegment(segmentCountersRef.current.source)
+          return
+        }
+
+        if (event.type === 'output-transcript-done') {
+          closeSegment(segmentCountersRef.current.translation)
           return
         }
 
         if (event.type === 'warning') {
           setStatusText(event.message)
-          return
-        }
-
-        if (event.type === 'output-transcript-delta') {
-          const startsNewCaption = translatedCaptionBufferRef.current.length === 0
-          translatedCaptionBufferRef.current += event.delta
-
-          setTranslatedCaptions((current) => {
-            if (startsNewCaption) {
-              return [...current.slice(-4), translatedCaptionBufferRef.current]
-            }
-
-            return [...current.slice(0, -1), translatedCaptionBufferRef.current]
-          })
-          return
-        }
-
-        if (event.type === 'output-transcript-snapshot') {
-          const startsNewCaption = translatedCaptionBufferRef.current.length === 0
-          translatedCaptionBufferRef.current = event.text
-
-          setTranslatedCaptions((current) => {
-            if (startsNewCaption) {
-              return [...current.slice(-4), event.text]
-            }
-
-            return [...current.slice(0, -1), event.text]
-          })
-          return
-        }
-
-        if (event.type === 'output-transcript-done') {
-          translatedCaptionBufferRef.current = ''
           return
         }
 
@@ -528,14 +553,6 @@ function App(): React.JSX.Element {
     return cleanup
   }, [isTextComposing, textInput])
 
-  useLayoutEffect(() => {
-    scrollCaptionToEnd(sourceCaptionCurrentRef.current)
-  }, [currentSourceCaption])
-
-  useLayoutEffect(() => {
-    scrollCaptionToEnd(translatedCaptionCurrentRef.current)
-  }, [currentTranslatedCaption])
-
   return (
     <main className="app-shell">
       <section className="control-bar" aria-label="Caption controls">
@@ -645,29 +662,18 @@ function App(): React.JSX.Element {
       </section>
 
       <section className="caption-stage" aria-label="Captions">
-        <div className="caption-panel caption-panel-source" aria-label="Original transcript">
-          <div className="caption-label">Original</div>
-          <div ref={sourceCaptionCurrentRef} className="caption-current caption-current-source">
-            {currentSourceCaption}
-          </div>
-          <div className="caption-history">
-            {sourceCaptions.slice(0, -1).map((caption, index) => (
-              <p key={`${caption}-${index}`}>{caption}</p>
-            ))}
-          </div>
+        <div className="caption-toolbar">
+          <span className="caption-label">Captions</span>
+          <label className="save-toggle">
+            <input
+              type="checkbox"
+              checked={showSource}
+              onChange={(event) => handleShowSourceChange(event.target.checked)}
+            />
+            <span>Original</span>
+          </label>
         </div>
-
-        <div className="caption-panel caption-panel-translation" aria-label="Translated captions">
-          <div className="caption-label">Translation</div>
-          <div ref={translatedCaptionCurrentRef} className="caption-current">
-            {currentTranslatedCaption}
-          </div>
-          <div className="caption-history">
-            {translatedCaptions.slice(0, -1).map((caption, index) => (
-              <p key={`${caption}-${index}`}>{caption}</p>
-            ))}
-          </div>
-        </div>
+        <CaptionTimeline entries={captionEntries} showSource={showSource} />
       </section>
     </main>
   )

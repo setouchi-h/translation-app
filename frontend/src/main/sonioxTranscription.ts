@@ -34,20 +34,27 @@ export type SourceUtterance = {
   translation: string
 }
 
+/** Identifies the utterance a live caption belongs to, so its two halves can be paired. */
+export type LiveUtteranceRef = {
+  /** Increases by one per utterance within a session. */
+  id: number
+  speaker: string | null
+}
+
 export type UtteranceAssemblerCallbacks = {
   /** Text of the utterance being spoken right now, including words that may still change. */
-  onLiveText: (text: string) => void
+  onLiveText: (text: string, utterance: LiveUtteranceRef) => void
   /** The speaker finished the current utterance; the next live text starts a new one. */
   onSourceEnded: () => void
   /** Translation of the current utterance so far, including words that may still change. */
-  onLiveTranslation: (text: string) => void
+  onLiveTranslation: (text: string, utterance: LiveUtteranceRef) => void
   /** The translation of the current utterance is complete; the next one starts a new caption. */
   onTranslationEnded: () => void
   /** An utterance is complete, with whatever translation arrived for it. */
   onUtterance: (utterance: SourceUtterance) => void
 }
 
-type PendingUtterance = SourceUtterance & { ended: boolean }
+type PendingUtterance = SourceUtterance & { id: number; ended: boolean }
 
 /**
  * Turns the Soniox token stream into utterances.
@@ -59,6 +66,7 @@ type PendingUtterance = SourceUtterance & { ended: boolean }
  */
 export class UtteranceAssembler {
   private current: PendingUtterance | null = null
+  private nextId = 0
   private lastLiveText = ''
   private lastLiveTranslation = ''
   private readonly callbacks: UtteranceAssemblerCallbacks
@@ -74,6 +82,7 @@ export class UtteranceAssembler {
   acceptTokens(tokens: SonioxToken[]): void {
     let interimSource = ''
     let interimTranslation = ''
+    let interimSpeaker: string | null = null
 
     for (const token of tokens) {
       const text = typeof token.text === 'string' ? token.text : ''
@@ -91,6 +100,7 @@ export class UtteranceAssembler {
           interimTranslation += text
         } else {
           interimSource += text
+          interimSpeaker ??= typeof token.speaker === 'string' ? token.speaker : null
         }
         continue
       }
@@ -110,11 +120,16 @@ export class UtteranceAssembler {
       this.appendSource(token, text)
     }
 
-    const stableSource = this.current && !this.current.ended ? this.current.source : ''
-    const liveText = (stableSource + interimSource).trim()
+    // Once the current utterance has ended, interim words already belong to the next one,
+    // which is only created when its first final token arrives.
+    const speaking = this.current && !this.current.ended ? this.current : null
+    const liveText = ((speaking?.source ?? '') + interimSource).trim()
     if (liveText && liveText !== this.lastLiveText) {
       this.lastLiveText = liveText
-      this.callbacks.onLiveText(liveText)
+      this.callbacks.onLiveText(liveText, {
+        id: speaking?.id ?? this.nextId,
+        speaker: speaking?.speaker ?? interimSpeaker
+      })
     }
 
     this.emitLiveTranslation(interimTranslation)
@@ -162,7 +177,10 @@ export class UtteranceAssembler {
     const liveTranslation = (this.current.translation + interimTranslation).trim()
     if (liveTranslation && liveTranslation !== this.lastLiveTranslation) {
       this.lastLiveTranslation = liveTranslation
-      this.callbacks.onLiveTranslation(liveTranslation)
+      this.callbacks.onLiveTranslation(liveTranslation, {
+        id: this.current.id,
+        speaker: this.current.speaker
+      })
     }
   }
 
@@ -180,6 +198,7 @@ export class UtteranceAssembler {
 
     if (!this.current) {
       this.current = {
+        id: this.nextId++,
         speaker: null,
         language: null,
         startMs: null,
