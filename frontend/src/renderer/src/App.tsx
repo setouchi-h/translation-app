@@ -21,9 +21,12 @@ type Pcm16WorkletMessage = {
 type TranslationEvent =
   | { type: 'connected'; sessionId: string }
   | { type: 'input-transcript-delta'; delta: string }
+  | { type: 'input-transcript-snapshot'; text: string }
   | { type: 'input-transcript-done' }
   | { type: 'output-transcript-delta'; delta: string }
+  | { type: 'output-transcript-snapshot'; text: string }
   | { type: 'output-transcript-done' }
+  | { type: 'warning'; message: string }
   | { type: 'error'; message: string }
   | { type: 'closed'; code: number; reason: string }
 
@@ -44,6 +47,15 @@ const TARGET_LANGUAGES = [
 ]
 
 const TEXT_TRANSLATION_DEBOUNCE_MS = 120
+const SAVE_TRANSCRIPT_STORAGE_KEY = 'saveTranscript'
+
+function loadSaveTranscriptPreference(): boolean {
+  try {
+    return window.localStorage.getItem(SAVE_TRANSCRIPT_STORAGE_KEY) !== 'false'
+  } catch {
+    return true
+  }
+}
 
 function scrollCaptionToEnd(element: HTMLDivElement | null): void {
   if (!element) {
@@ -60,6 +72,8 @@ function App(): React.JSX.Element {
   const [status, setStatus] = useState<CaptureStatus>('idle')
   const [statusText, setStatusText] = useState('Ready')
   const [audioLevel, setAudioLevel] = useState(0)
+  const [saveTranscript, setSaveTranscript] = useState(loadSaveTranscriptPreference)
+  const [isSavingTranscript, setIsSavingTranscript] = useState(false)
   const [sourceCaptions, setSourceCaptions] = useState<string[]>([])
   const [translatedCaptions, setTranslatedCaptions] = useState<string[]>([])
   const [textInput, setTextInput] = useState('')
@@ -232,7 +246,7 @@ function App(): React.JSX.Element {
     }
 
     setStatus('starting')
-    setStatusText('Connecting to OpenAI')
+    setStatusText('Connecting')
 
     try {
       if (!window.api?.translation) {
@@ -260,10 +274,12 @@ function App(): React.JSX.Element {
       setSourceCaptions([])
       setTranslatedCaptions([])
 
-      await window.api.translation.start({
+      const session = await window.api.translation.start({
         inputDeviceId: selectedInputId || 'default',
-        targetLanguage
+        targetLanguage,
+        saveTranscript
       })
+      setIsSavingTranscript(session.transcriptPath !== null)
       await startAudioPipeline(stream)
 
       setSourceCaptions((current) => current.slice(-4))
@@ -274,6 +290,7 @@ function App(): React.JSX.Element {
     } catch (error) {
       await stopCapture()
       await window.api?.translation?.stop()
+      setIsSavingTranscript(false)
       setStatus('error')
       setStatusText(error instanceof Error ? error.message : 'Failed to start audio capture.')
     }
@@ -281,9 +298,28 @@ function App(): React.JSX.Element {
 
   const handleStop = async (): Promise<void> => {
     await stopCapture()
+    setStatusText('Finishing')
+    // Waits for the service to deliver the tail of the last utterance.
     await window.api?.translation?.stop()
+    setIsSavingTranscript(false)
     setStatus('ready')
     setStatusText('Stopped')
+  }
+
+  const handleSaveTranscriptChange = (enabled: boolean): void => {
+    setSaveTranscript(enabled)
+    try {
+      window.localStorage.setItem(SAVE_TRANSCRIPT_STORAGE_KEY, String(enabled))
+    } catch {
+      // The preference just won't persist.
+    }
+  }
+
+  const handleOpenTranscripts = async (): Promise<void> => {
+    const errorMessage = await window.api?.transcripts?.openFolder()
+    if (errorMessage) {
+      setStatusText(`Could not open transcripts folder: ${errorMessage}`)
+    }
   }
 
   useEffect(() => {
@@ -308,8 +344,27 @@ function App(): React.JSX.Element {
           return
         }
 
+        if (event.type === 'input-transcript-snapshot') {
+          const startsNewCaption = sourceCaptionBufferRef.current.length === 0
+          sourceCaptionBufferRef.current = event.text
+
+          setSourceCaptions((current) => {
+            if (startsNewCaption) {
+              return [...current.slice(-4), event.text]
+            }
+
+            return [...current.slice(0, -1), event.text]
+          })
+          return
+        }
+
         if (event.type === 'input-transcript-done') {
           sourceCaptionBufferRef.current = ''
+          return
+        }
+
+        if (event.type === 'warning') {
+          setStatusText(event.message)
           return
         }
 
@@ -327,6 +382,20 @@ function App(): React.JSX.Element {
           return
         }
 
+        if (event.type === 'output-transcript-snapshot') {
+          const startsNewCaption = translatedCaptionBufferRef.current.length === 0
+          translatedCaptionBufferRef.current = event.text
+
+          setTranslatedCaptions((current) => {
+            if (startsNewCaption) {
+              return [...current.slice(-4), event.text]
+            }
+
+            return [...current.slice(0, -1), event.text]
+          })
+          return
+        }
+
         if (event.type === 'output-transcript-done') {
           translatedCaptionBufferRef.current = ''
           return
@@ -334,6 +403,8 @@ function App(): React.JSX.Element {
 
         if (event.type === 'error') {
           void stopCapture()
+          void window.api?.translation?.stop()
+          setIsSavingTranscript(false)
           setStatus('error')
           setStatusText(event.message)
           return
@@ -341,6 +412,8 @@ function App(): React.JSX.Element {
 
         if (event.type === 'closed') {
           void stopCapture()
+          void window.api?.translation?.stop()
+          setIsSavingTranscript(false)
           setStatus((current) => (current === 'listening' ? 'ready' : current))
           setStatusText(event.reason ? `Disconnected: ${event.reason}` : 'Disconnected')
         }
@@ -533,6 +606,19 @@ function App(): React.JSX.Element {
         <div className="meter" aria-label="Input level">
           <div className="meter-fill" style={{ width: `${audioLevel}%` }} />
         </div>
+        {isSavingTranscript && <span className="saving-indicator">Saving</span>}
+        <label className="save-toggle">
+          <input
+            type="checkbox"
+            checked={saveTranscript}
+            onChange={(event) => handleSaveTranscriptChange(event.target.checked)}
+            disabled={status === 'listening' || status === 'starting'}
+          />
+          <span>Save transcript</span>
+        </label>
+        <button className="button secondary" type="button" onClick={handleOpenTranscripts}>
+          Transcripts
+        </button>
       </section>
 
       <section className="text-translator" aria-label="Japanese to English text translation">

@@ -4,7 +4,7 @@ import { electronAPI } from '@electron-toolkit/preload'
 // Custom APIs for renderer
 const api = {
   translation: {
-    start: (request: { inputDeviceId: string; targetLanguage: string }) =>
+    start: (request: { inputDeviceId: string; targetLanguage: string; saveTranscript?: boolean }) =>
       ipcRenderer.invoke('translation:start', request),
     sendAudioChunk: (chunk: {
       sequence: number
@@ -45,6 +45,9 @@ const api = {
       }
     },
     stop: () => ipcRenderer.invoke('translation:stop')
+  },
+  transcripts: {
+    openFolder: () => ipcRenderer.invoke('transcripts:open-folder')
   }
 }
 

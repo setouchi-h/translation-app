@@ -1,14 +1,12 @@
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { existsSync } from 'fs'
+import { mkdir } from 'fs/promises'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { config as loadEnvFile } from 'dotenv'
 import icon from '../../resources/icon.png?asset'
-import {
-  RealtimeTranslationSession,
-  type TranslationAudioChunk,
-  type TranslationStartRequest
-} from './realtimeTranslation'
+import { CaptionSession, type CaptionStartRequest } from './captionSession'
+import type { TranslationAudioChunk } from './realtimeTranslation'
 import {
   translateJapaneseTextToEnglish,
   streamJapaneseTextToEnglish,
@@ -16,7 +14,8 @@ import {
   type TextTranslationStreamRequest
 } from './textTranslation'
 
-let activeTranslation: RealtimeTranslationSession | null = null
+let activeTranslation: CaptionSession | null = null
+let isQuittingAfterStop = false
 const activeTextTranslations = new Map<string, AbortController>()
 
 function getErrorMessage(error: unknown): string {
@@ -42,6 +41,10 @@ function cancelTextTranslations(webContentsId: number, requestId?: number): void
       activeTextTranslations.delete(key)
     }
   }
+}
+
+function getTranscriptsDirectory(): string {
+  return join(app.getPath('userData'), 'transcripts')
 }
 
 function loadLocalEnv(): void {
@@ -105,18 +108,22 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  ipcMain.handle('translation:start', async (event, request: TranslationStartRequest) => {
+  ipcMain.handle('translation:start', async (event, request: CaptionStartRequest) => {
     if (activeTranslation) {
-      activeTranslation.stop()
+      const previous = activeTranslation
       activeTranslation = null
+      await previous.stop()
     }
 
-    activeTranslation = new RealtimeTranslationSession(request, event.sender)
+    const session = new CaptionSession(request, event.sender, getTranscriptsDirectory())
+    activeTranslation = session
 
     try {
-      return await activeTranslation.start()
+      return await session.start()
     } catch (error) {
-      activeTranslation = null
+      if (activeTranslation === session) {
+        activeTranslation = null
+      }
       throw error
     }
   })
@@ -125,16 +132,22 @@ app.whenReady().then(() => {
     activeTranslation?.sendAudioChunk(chunk)
   })
 
-  ipcMain.handle('translation:stop', () => {
-    const stoppedSession = activeTranslation?.stop() ?? {
-      stopped: false,
-      stoppedAt: new Date().toISOString(),
-      session: null
-    }
-
+  ipcMain.handle('translation:stop', async () => {
+    const session = activeTranslation
     activeTranslation = null
 
-    return stoppedSession
+    await session?.stop()
+
+    return {
+      stopped: session !== null,
+      stoppedAt: new Date().toISOString()
+    }
+  })
+
+  ipcMain.handle('transcripts:open-folder', async () => {
+    const directory = getTranscriptsDirectory()
+    await mkdir(directory, { recursive: true })
+    return shell.openPath(directory)
   })
 
   ipcMain.handle('translation:translate-text', (_event, request: TextTranslationRequest) => {
@@ -185,6 +198,20 @@ app.whenReady().then(() => {
     // dock icon is clicked and there are no other windows open.
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+// Let a running session flush its transcript before the app exits.
+app.on('before-quit', (event) => {
+  if (!activeTranslation || isQuittingAfterStop) {
+    return
+  }
+
+  event.preventDefault()
+  isQuittingAfterStop = true
+
+  const session = activeTranslation
+  activeTranslation = null
+  void session.stop().finally(() => app.quit())
 })
 
 // Quit when all windows are closed, except on macOS. There, it's common

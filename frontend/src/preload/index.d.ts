@@ -3,17 +3,15 @@ import { ElectronAPI } from '@electron-toolkit/preload'
 type TranslationStartRequest = {
   inputDeviceId: string
   targetLanguage: string
+  saveTranscript?: boolean
 }
 
 type TranslationSession = {
   id: string
-  inputDeviceId: string
   targetLanguage: string
   startedAt: string
-  audioChunksReceived: number
-  audioBytesReceived: number
-  lastAudioAt?: string
-  lastAudioLevel?: number
+  provider: 'soniox' | 'openai'
+  transcriptPath: string | null
 }
 
 type TranslationAudioChunk = {
@@ -30,7 +28,6 @@ type TranslationAudioChunk = {
 type TranslationStopResult = {
   stopped: boolean
   stoppedAt: string
-  session: TranslationSession | null
 }
 
 type TextTranslationResult = {
@@ -52,9 +49,12 @@ type TextTranslationEvent =
 type TranslationEvent =
   | { type: 'connected'; sessionId: string }
   | { type: 'input-transcript-delta'; delta: string }
+  | { type: 'input-transcript-snapshot'; text: string }
   | { type: 'input-transcript-done' }
   | { type: 'output-transcript-delta'; delta: string }
+  | { type: 'output-transcript-snapshot'; text: string }
   | { type: 'output-transcript-done' }
+  | { type: 'warning'; message: string }
   | { type: 'error'; message: string }
   | { type: 'closed'; code: number; reason: string }
 
@@ -68,6 +68,10 @@ type AppAPI = {
     cancelText: (request?: { requestId?: number }) => void
     onTextEvent: (callback: (event: TextTranslationEvent) => void) => () => void
     stop: () => Promise<TranslationStopResult>
+  }
+  transcripts: {
+    /** Resolves to an empty string on success, or an error message. */
+    openFolder: () => Promise<string>
   }
 }
 
