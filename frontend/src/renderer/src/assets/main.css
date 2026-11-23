@@ -30,7 +30,7 @@ textarea {
 
 .control-bar {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) minmax(140px, 180px) auto auto;
+  grid-template-columns: minmax(200px, 1fr) minmax(120px, 170px) minmax(110px, 150px) auto auto;
   gap: 10px;
   align-items: end;
   padding: 12px;

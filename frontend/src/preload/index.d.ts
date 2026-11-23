@@ -1,27 +1,13 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
-import type { AppAudioSelection, CaptureApp, CaptureEvent } from '../shared/capture'
-import type { CaptionOverlayState } from '../shared/captions'
-
-type TranslationStartRequest = {
-  inputDeviceId: string
-  targetLanguage: string
-  saveTranscript?: boolean
-  /** When set, the main process captures these apps and no audio chunks need to be sent. */
-  appAudio?: AppAudioSelection
-}
-
-type TranslationSession = {
-  id: string
-  targetLanguage: string
-  startedAt: string
-  provider: 'soniox' | 'openai'
-  transcriptPath: string | null
-}
-
-/** A block of 24 kHz mono PCM16 audio from the renderer's audio worklet. */
-type TranslationAudioChunk = {
-  pcm16Base64: string
-}
+import type { CaptureApp, CaptureEvent } from '../shared/capture'
+import type {
+  AudioChunk,
+  CaptionOverlayState,
+  CaptionProvider,
+  CaptionSessionEvent,
+  CaptionSessionInfo,
+  CaptionStartRequest
+} from '../shared/captions'
 
 type TranslationStopResult = {
   stopped: boolean
@@ -44,29 +30,13 @@ type TextTranslationEvent =
   | { type: 'done'; requestId: number; text: string; model: string }
   | { type: 'error'; requestId: number; message: string }
 
-/** Present when the provider splits speech into utterances (Soniox). */
-type CaptionUtteranceRef = {
-  utteranceId?: number
-  speaker?: string | null
-}
-
-type TranslationEvent =
-  | { type: 'connected'; sessionId: string }
-  | { type: 'input-transcript-delta'; delta: string }
-  | ({ type: 'input-transcript-snapshot'; text: string } & CaptionUtteranceRef)
-  | { type: 'input-transcript-done' }
-  | { type: 'output-transcript-delta'; delta: string }
-  | ({ type: 'output-transcript-snapshot'; text: string } & CaptionUtteranceRef)
-  | { type: 'output-transcript-done' }
-  | { type: 'warning'; message: string }
-  | { type: 'error'; message: string }
-  | { type: 'closed'; code: number; reason: string }
-
 type AppAPI = {
   translation: {
-    start: (request: TranslationStartRequest) => Promise<TranslationSession>
-    sendAudioChunk: (chunk: TranslationAudioChunk) => void
-    onEvent: (callback: (event: TranslationEvent) => void) => () => void
+    start: (request: CaptionStartRequest) => Promise<CaptionSessionInfo>
+    sendAudioChunk: (chunk: AudioChunk) => void
+    sendMicAudioChunk: (chunk: AudioChunk) => void
+    getProvider: () => Promise<CaptionProvider>
+    onEvent: (callback: (event: CaptionSessionEvent) => void) => () => void
     translateText: (request: { text: string }) => Promise<TextTranslationResult>
     streamText: (request: TextTranslationStreamRequest) => void
     cancelText: (request?: { requestId?: number }) => void

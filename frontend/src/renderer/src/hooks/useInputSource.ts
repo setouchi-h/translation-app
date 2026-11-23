@@ -19,6 +19,7 @@ export const APP_SOURCES: Record<AppMode, string> = {
 
 const SOURCE_STORAGE_KEY = 'inputSource'
 const APP_SELECTIONS_STORAGE_KEY = 'appSelections'
+const MIC_STORAGE_KEY = 'micDevice'
 // Each mode keeps its own apps: the apps worth listening to are not the ones worth muting.
 const DEFAULT_APP_SELECTIONS: AppSelections = {
   include: [{ id: 'com.hnc.Discord', name: 'Discord' }],
@@ -61,6 +62,14 @@ export type InputSource = {
   label: string
   /** False when there is nothing to listen to yet. */
   isReady: boolean
+  /** False when the caption provider cannot transcribe a second stream (needs Soniox). */
+  isMicSupported: boolean
+  /**
+   * Input device carrying the user's own voice, transcribed alongside the source, or ''
+   * for none. Also '' while the chosen device is unplugged or is the source itself.
+   */
+  micDeviceId: string
+  selectMic: (deviceId: string) => void
   /** Reloads devices and apps. Resolves to whether any source is available. */
   refresh: () => Promise<boolean>
 }
@@ -72,20 +81,24 @@ export function useInputSource(): InputSource {
   const [captureApps, setCaptureApps] = useState<CaptureApp[]>([])
   const [source, setSource] = useState(() => loadPreference(SOURCE_STORAGE_KEY) ?? '')
   const [appSelections, setAppSelections] = useState(loadAppSelections)
+  const [isMicSupported, setIsMicSupported] = useState(false)
+  const [micPreference, setMicPreference] = useState(() => loadPreference(MIC_STORAGE_KEY) ?? '')
 
   const appMode = appModeOf(source)
   const selectedApps = appMode ? appSelections[appMode] : null
 
   const refresh = useCallback(async (): Promise<boolean> => {
-    const [devices, appCapture] = await Promise.all([
+    const [devices, appCapture, provider] = await Promise.all([
       navigator.mediaDevices.enumerateDevices(),
-      window.api?.capture?.listApps() ?? { supported: false, apps: [] }
+      window.api?.capture?.listApps() ?? { supported: false, apps: [] },
+      window.api?.translation?.getProvider()
     ])
     const inputs = devices.filter((device) => device.kind === 'audioinput')
 
     setAudioInputs(inputs)
     setIsAppCaptureSupported(appCapture.supported)
     setCaptureApps(appCapture.apps)
+    setIsMicSupported(provider === 'soniox')
     setSource((current) => {
       const isAvailable = appModeOf(current)
         ? appCapture.supported
@@ -104,6 +117,19 @@ export function useInputSource(): InputSource {
     setSource(next)
     storePreference(SOURCE_STORAGE_KEY, next)
   }
+
+  const selectMic = (deviceId: string): void => {
+    setMicPreference(deviceId)
+    storePreference(MIC_STORAGE_KEY, deviceId)
+  }
+
+  // The stored choice is kept as is, so it comes back when the device is plugged in again.
+  const micDeviceId =
+    isMicSupported &&
+    micPreference !== source &&
+    audioInputs.some((input) => input.deviceId === micPreference)
+      ? micPreference
+      : ''
 
   const toggleApp = (app: SelectedApp): void => {
     if (!appMode || !selectedApps) {
@@ -172,6 +198,9 @@ export function useInputSource(): InputSource {
     appAudio,
     label,
     isReady,
+    isMicSupported,
+    micDeviceId,
+    selectMic,
     refresh
   }
 }

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CaptureEvent } from '../../shared/capture'
 import { AppPicker } from './components/AppPicker'
-import type { CaptionEntry } from '../../shared/captions'
+import { startPcmPipeline, type PcmPipeline } from './audio/pcmPipeline'
+import type { CaptionChannel, CaptionEntry, CaptionSessionEvent } from '../../shared/captions'
 import { CaptionTimeline } from './components/CaptionTimeline'
 import { useCaptionOverlay } from './hooks/useCaptionOverlay'
 import { APP_SOURCES, useInputSource } from './hooks/useInputSource'
@@ -14,38 +15,6 @@ type TextTranslationStatus = 'idle' | 'waiting' | 'translating' | 'translated' |
 type LoadAudioInputsOptions = {
   keepStatusText?: boolean
 }
-
-type Pcm16WorkletMessage = {
-  type: 'pcm16-chunk'
-  sequence: number
-  sampleRate: number
-  durationMs: number
-  pcm16Base64: string
-  byteLength: number
-  level: number
-}
-
-type TranslationEvent =
-  | { type: 'connected'; sessionId: string }
-  | { type: 'input-transcript-delta'; delta: string }
-  | {
-      type: 'input-transcript-snapshot'
-      text: string
-      utteranceId?: number
-      speaker?: string | null
-    }
-  | { type: 'input-transcript-done' }
-  | { type: 'output-transcript-delta'; delta: string }
-  | {
-      type: 'output-transcript-snapshot'
-      text: string
-      utteranceId?: number
-      speaker?: string | null
-    }
-  | { type: 'output-transcript-done' }
-  | { type: 'warning'; message: string }
-  | { type: 'error'; message: string }
-  | { type: 'closed'; code: number; reason: string }
 
 type TextTranslationEvent =
   | { type: 'started'; requestId: number; model: string }
@@ -96,6 +65,7 @@ function closeSegment(counter: SegmentCounter): void {
 function updateCaptionEntry(
   entries: CaptionEntry[],
   key: string,
+  channel: CaptionChannel,
   startedAt: number,
   update: (entry: CaptionEntry) => CaptionEntry
 ): CaptionEntry[] {
@@ -108,7 +78,10 @@ function updateCaptionEntry(
     }
   }
 
-  return [...entries, update({ key, speaker: null, source: '', translation: '', startedAt })]
+  return [
+    ...entries,
+    update({ key, channel, speaker: null, source: '', translation: '', startedAt })
+  ]
 }
 
 function App(): React.JSX.Element {
@@ -130,12 +103,8 @@ function App(): React.JSX.Element {
   const [textTranslationStatus, setTextTranslationStatus] = useState<TextTranslationStatus>('idle')
   const [textTranslationError, setTextTranslationError] = useState('')
   const [isTextComposing, setIsTextComposing] = useState(false)
-  const streamRef = useRef<MediaStream | null>(null)
-  const audioContextRef = useRef<AudioContext | null>(null)
-  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
-  const workletNodeRef = useRef<AudioWorkletNode | null>(null)
-  const silentOutputRef = useRef<GainNode | null>(null)
-  const animationFrameRef = useRef<number | null>(null)
+  const streamsRef = useRef<MediaStream[]>([])
+  const pipelinesRef = useRef<PcmPipeline[]>([])
   const segmentCountersRef = useRef<Record<CaptionStream, SegmentCounter>>({
     source: { index: 0, open: false },
     translation: { index: 0, open: false }
@@ -195,36 +164,18 @@ function App(): React.JSX.Element {
     [refreshSources]
   )
 
-  const stopAudioLevelLoop = useCallback((): void => {
-    if (animationFrameRef.current !== null) {
-      cancelAnimationFrame(animationFrameRef.current)
-      animationFrameRef.current = null
-    }
-  }, [])
-
   const stopCapture = useCallback(async (): Promise<void> => {
-    stopAudioLevelLoop()
+    const pipelines = pipelinesRef.current
+    const streams = streamsRef.current
+    pipelinesRef.current = []
+    streamsRef.current = []
 
-    workletNodeRef.current?.port.close()
-    workletNodeRef.current?.disconnect()
-    workletNodeRef.current = null
-
-    silentOutputRef.current?.disconnect()
-    silentOutputRef.current = null
-
-    audioSourceRef.current?.disconnect()
-    audioSourceRef.current = null
-
-    streamRef.current?.getTracks().forEach((track) => track.stop())
-    streamRef.current = null
-
-    if (audioContextRef.current) {
-      await audioContextRef.current.close()
-      audioContextRef.current = null
-    }
+    // Tracks first: the microphone must be released even if closing a pipeline fails.
+    streams.forEach((stream) => stream.getTracks().forEach((track) => track.stop()))
+    await Promise.all(pipelines.map((pipeline) => pipeline.stop()))
 
     setAudioLevel(0)
-  }, [stopAudioLevelLoop])
+  }, [])
 
   /** Ends the session and leaves the reason in the status line. */
   const failSession = useCallback(
@@ -238,61 +189,19 @@ function App(): React.JSX.Element {
     [stopCapture]
   )
 
-  const startAudioPipeline = async (stream: MediaStream): Promise<void> => {
-    const audioContext = new AudioContext()
-    await audioContext.audioWorklet.addModule(new URL('./audio/pcm16-worklet.js', import.meta.url))
-
-    const source = audioContext.createMediaStreamSource(stream)
-    const analyser = audioContext.createAnalyser()
-    analyser.fftSize = 1024
-    const data = new Uint8Array(analyser.fftSize)
-
-    const workletNode = new AudioWorkletNode(audioContext, 'pcm16-chunk-processor', {
-      numberOfInputs: 1,
-      numberOfOutputs: 1,
-      outputChannelCount: [1],
-      processorOptions: {
-        chunkMs: 100
-      }
+  const openInputDevice = async (
+    deviceId: string,
+    processing: Pick<
+      MediaTrackConstraints,
+      'echoCancellation' | 'noiseSuppression' | 'autoGainControl'
+    >
+  ): Promise<MediaStream> => {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { ...processing, ...(deviceId && { deviceId: { exact: deviceId } }) },
+      video: false
     })
-    const silentOutput = audioContext.createGain()
-    silentOutput.gain.value = 0
-
-    workletNode.port.onmessage = (event: MessageEvent<Pcm16WorkletMessage>) => {
-      if (event.data.type !== 'pcm16-chunk') {
-        return
-      }
-
-      window.api?.translation?.sendAudioChunk({ pcm16Base64: event.data.pcm16Base64 })
-    }
-
-    source.connect(analyser)
-    source.connect(workletNode)
-    workletNode.connect(silentOutput)
-    silentOutput.connect(audioContext.destination)
-
-    audioSourceRef.current = source
-    workletNodeRef.current = workletNode
-    silentOutputRef.current = silentOutput
-    audioContextRef.current = audioContext
-
-    if (audioContext.state === 'suspended') {
-      await audioContext.resume()
-    }
-
-    const tick = (): void => {
-      analyser.getByteTimeDomainData(data)
-
-      let peak = 0
-      for (const sample of data) {
-        peak = Math.max(peak, Math.abs(sample - 128))
-      }
-
-      setAudioLevel(Math.min(100, Math.round((peak / 128) * 100)))
-      animationFrameRef.current = requestAnimationFrame(tick)
-    }
-
-    tick()
+    streamsRef.current.push(stream)
+    return stream
   }
 
   const handleStart = async (): Promise<void> => {
@@ -309,24 +218,24 @@ function App(): React.JSX.Element {
       }
 
       // App audio is captured by the main process, so no stream is opened here.
-      let stream: MediaStream | null = null
-      if (!input.appAudio) {
-        const audioConstraints: MediaTrackConstraints = {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false
-        }
-
-        if (input.source) {
-          audioConstraints.deviceId = { exact: input.source }
-        }
-
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: audioConstraints,
-          video: false
-        })
-        streamRef.current = stream
-      }
+      // The source is a recording of other people, which voice processing would distort.
+      const stream = input.appAudio
+        ? null
+        : await openInputDevice(input.source, {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false
+          })
+      // Echo cancellation only removes what this app plays, which is nothing, so speech
+      // from the speakers still reaches the microphone. It is on for the rest of the
+      // voice processing chain.
+      const micStream = input.micDeviceId
+        ? await openInputDevice(input.micDeviceId, {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          })
+        : null
 
       segmentCountersRef.current = {
         source: { index: 0, open: false },
@@ -338,11 +247,24 @@ function App(): React.JSX.Element {
         inputDeviceId: input.source || 'default',
         targetLanguage,
         saveTranscript,
+        microphone: micStream !== null,
         appAudio: input.appAudio ?? undefined
       })
       setIsSavingTranscript(session.transcriptPath !== null)
+      const { translation } = window.api
+      // Each pipeline is stored only once it exists, in whichever list is current by then.
       if (stream) {
-        await startAudioPipeline(stream)
+        const pipeline = await startPcmPipeline(stream, {
+          onChunk: (pcm16Base64) => translation.sendAudioChunk({ pcm16Base64 }),
+          onLevel: setAudioLevel
+        })
+        pipelinesRef.current.push(pipeline)
+      }
+      if (micStream) {
+        const pipeline = await startPcmPipeline(micStream, {
+          onChunk: (pcm16Base64) => translation.sendMicAudioChunk({ pcm16Base64 })
+        })
+        pipelinesRef.current.push(pipeline)
       }
 
       setStatus('listening')
@@ -382,7 +304,7 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     const unsubscribe =
-      window.api?.translation?.onEvent((event: TranslationEvent) => {
+      window.api?.translation?.onEvent((event: CaptionSessionEvent) => {
         if (event.type === 'connected') {
           setStatusText('Connected. Waiting for speech')
           return
@@ -396,14 +318,16 @@ function App(): React.JSX.Element {
         ) {
           const stream: CaptionStream = event.type.startsWith('input') ? 'source' : 'translation'
           const utterance = 'utteranceId' in event ? event : null
+          const channel = utterance?.channel ?? 'them'
+          // Each channel numbers its own utterances.
           const key =
             utterance?.utteranceId !== undefined
-              ? `u${utterance.utteranceId}`
+              ? `${channel === 'me' ? 'me-' : ''}u${utterance.utteranceId}`
               : segmentKey(segmentCountersRef.current[stream])
           const startedAt = Date.now()
 
           setCaptionEntries((current) =>
-            updateCaptionEntry(current, key, startedAt, (entry) => ({
+            updateCaptionEntry(current, key, channel, startedAt, (entry) => ({
               ...entry,
               speaker: utterance?.speaker ?? entry.speaker,
               [stream]: 'delta' in event ? entry[stream] + event.delta : event.text
@@ -601,6 +525,30 @@ function App(): React.JSX.Element {
                 ))}
               </optgroup>
             )}
+          </select>
+        </label>
+
+        <label className="field">
+          <span>My mic</span>
+          <select
+            value={input.micDeviceId}
+            onChange={(event) => input.selectMic(event.target.value)}
+            disabled={isBusy || !input.isMicSupported}
+            title={
+              input.isMicSupported
+                ? 'Transcribes your own voice next to the captions. Use headphones, or the speakers are picked up as you.'
+                : 'Needs SONIOX_API_KEY.'
+            }
+          >
+            <option value="">{input.isMicSupported ? 'Off' : 'Needs Soniox'}</option>
+            {input.isMicSupported &&
+              input.audioInputs
+                .filter((device) => device.deviceId && device.deviceId !== input.source)
+                .map((device, index) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label || `Audio input ${index + 1}`}
+                  </option>
+                ))}
           </select>
         </label>
 

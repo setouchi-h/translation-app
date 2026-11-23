@@ -9,6 +9,7 @@ type CaptionTimelineProps = {
 }
 
 const SPEAKER_COLORS = ['#4fb7a5', '#e0b34f', '#7aa7f0', '#e0859a', '#a98ee6', '#8fc46a']
+const OWN_SPEECH_COLOR = '#c3cad6'
 const STICK_TO_BOTTOM_PX = 48
 
 function speakerColor(speaker: string | null): string {
@@ -32,7 +33,7 @@ type CaptionRowProps = {
   entry: CaptionEntry
   showHeader: boolean
   showSource: boolean
-  /** Only the newest entry can still be waiting for its translation. */
+  /** Only the newest translated entry can still be waiting for its translation. */
   isLatest: boolean
 }
 
@@ -46,6 +47,7 @@ function areRowsEqual(previous: CaptionRowProps, next: CaptionRowProps): boolean
     previous.showSource === next.showSource &&
     previous.isLatest === next.isLatest &&
     previous.entry.key === next.entry.key &&
+    previous.entry.channel === next.entry.channel &&
     previous.entry.speaker === next.entry.speaker &&
     previous.entry.source === next.entry.source &&
     previous.entry.translation === next.entry.translation &&
@@ -59,17 +61,28 @@ const CaptionRow = memo(function CaptionRow({
   showSource,
   isLatest
 }: CaptionRowProps): React.JSX.Element {
+  const isOwnSpeech = entry.channel === 'me'
   // Speech that needs no translation never gets one, so its original text stands in.
-  const sourceVisible = entry.source && (showSource || (!entry.translation && !isLatest))
+  // The user's own speech is never translated.
+  const sourceVisible =
+    entry.source && (showSource || isOwnSpeech || (!entry.translation && !isLatest))
 
   return (
     <article
       className={`caption-entry${showHeader ? ' with-header' : ''}`}
-      style={{ '--speaker-color': speakerColor(entry.speaker) } as React.CSSProperties}
+      style={
+        {
+          '--speaker-color': isOwnSpeech ? OWN_SPEECH_COLOR : speakerColor(entry.speaker)
+        } as React.CSSProperties
+      }
     >
       {showHeader && (
         <header className="caption-meta">
-          {entry.speaker !== null && <span>Speaker {entry.speaker}</span>}
+          {isOwnSpeech ? (
+            <span>You</span>
+          ) : (
+            entry.speaker !== null && <span>Speaker {entry.speaker}</span>
+          )}
           <time>{formatTime(entry.startedAt)}</time>
         </header>
       )}
@@ -77,7 +90,7 @@ const CaptionRow = memo(function CaptionRow({
       {entry.translation ? (
         <p className="caption-translation">{entry.translation}</p>
       ) : (
-        isLatest && <p className="caption-translation pending">…</p>
+        isLatest && !isOwnSpeech && <p className="caption-translation pending">…</p>
       )}
     </article>
   )
@@ -126,6 +139,10 @@ export const CaptionTimeline = memo(function CaptionTimeline({
     setIsAtBottom(true)
   }
 
+  // The user's own lines are not translated, so they do not end the wait of the line
+  // before them.
+  const latestTranslatedIndex = entries.findLastIndex((entry) => entry.channel !== 'me')
+
   return (
     <div className="caption-timeline">
       <div ref={scrollRef} className="caption-scroll" onScroll={handleScroll}>
@@ -137,6 +154,7 @@ export const CaptionTimeline = memo(function CaptionTimeline({
             const showHeader =
               showHeaders &&
               (!previous ||
+                previous.channel !== entry.channel ||
                 previous.speaker !== entry.speaker ||
                 formatTime(previous.startedAt) !== formatTime(entry.startedAt))
 
@@ -146,7 +164,7 @@ export const CaptionTimeline = memo(function CaptionTimeline({
                 entry={entry}
                 showHeader={showHeader}
                 showSource={showSource}
-                isLatest={index === entries.length - 1}
+                isLatest={index === latestTranslatedIndex}
               />
             )
           })

@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import type { AudioChunk, CaptionStartRequest } from '../shared/captions'
 
 /** Listens to a channel from the main process. Calling the result stops listening. */
 function subscribe(channel: string): (callback: (payload: unknown) => void) => () => void {
@@ -19,14 +20,11 @@ function subscribe(channel: string): (callback: (payload: unknown) => void) => (
 // Custom APIs for renderer
 const api = {
   translation: {
-    start: (request: {
-      inputDeviceId: string
-      targetLanguage: string
-      saveTranscript?: boolean
-      appAudio?: { mode: 'include' | 'exclude'; appIds: string[] }
-    }) => ipcRenderer.invoke('translation:start', request),
-    sendAudioChunk: (chunk: { pcm16Base64: string }) =>
-      ipcRenderer.send('translation:audio-chunk', chunk),
+    start: (request: CaptionStartRequest) => ipcRenderer.invoke('translation:start', request),
+    sendAudioChunk: (chunk: AudioChunk) => ipcRenderer.send('translation:audio-chunk', chunk),
+    sendMicAudioChunk: (chunk: AudioChunk) =>
+      ipcRenderer.send('translation:mic-audio-chunk', chunk),
+    getProvider: () => ipcRenderer.invoke('translation:provider'),
     onEvent: subscribe('translation:event'),
     translateText: (request: { text: string }) =>
       ipcRenderer.invoke('translation:translate-text', request),

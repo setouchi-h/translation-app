@@ -26,6 +26,11 @@ type SonioxResponse = {
 }
 
 export type SourceUtterance = {
+  /**
+   * Wall-clock time the first settled word arrived. Unlike `startMs`, which counts from the
+   * start of one stream's audio, it orders utterances of separate streams.
+   */
+  startedAt: string
   speaker: string | null
   language: string | null
   startMs: number | null
@@ -159,6 +164,7 @@ export class UtteranceAssembler {
     const translation = utterance.translation.trim()
     if (source || translation) {
       this.callbacks.onUtterance({
+        startedAt: utterance.startedAt,
         speaker: utterance.speaker,
         language: utterance.language,
         startMs: utterance.startMs,
@@ -199,6 +205,7 @@ export class UtteranceAssembler {
     if (!this.current) {
       this.current = {
         id: this.nextId++,
+        startedAt: new Date().toISOString(),
         speaker: null,
         language: null,
         startMs: null,
@@ -243,17 +250,24 @@ function parseSonioxMessage(data: RawData): SonioxResponse | null {
   }
 }
 
+export type SonioxSessionOptions = {
+  /** Language to translate into, or null to transcribe only. */
+  targetLanguage: string | null
+  /** Off for a source known to be a single speaker. */
+  speakerDiarization: boolean
+}
+
 export class SonioxTranscriptionSession {
   private socket: WebSocket | null = null
   private clientClosed = false
   private flushTimer: NodeJS.Timeout | null = null
   private resolveFinished: (() => void) | null = null
   private readonly assembler: UtteranceAssembler
-  private readonly targetLanguage: string
+  private readonly options: SonioxSessionOptions
   private readonly callbacks: SonioxSessionCallbacks
 
-  constructor(targetLanguage: string, callbacks: SonioxSessionCallbacks) {
-    this.targetLanguage = targetLanguage
+  constructor(options: SonioxSessionOptions, callbacks: SonioxSessionCallbacks) {
+    this.options = options
     this.callbacks = callbacks
     this.assembler = new UtteranceAssembler(callbacks)
   }
@@ -280,13 +294,15 @@ export class SonioxTranscriptionSession {
         audio_format: 'pcm_s16le',
         sample_rate: SONIOX_SAMPLE_RATE,
         num_channels: 1,
-        enable_speaker_diarization: true,
+        enable_speaker_diarization: this.options.speakerDiarization,
         enable_language_identification: true,
         enable_endpoint_detection: true,
-        translation: {
-          type: 'one_way',
-          target_language: this.targetLanguage
-        }
+        ...(this.options.targetLanguage && {
+          translation: {
+            type: 'one_way',
+            target_language: this.options.targetLanguage
+          }
+        })
       })
     )
   }
@@ -379,7 +395,14 @@ export class SonioxTranscriptionSession {
   private scheduleEndedUtteranceFlush(): void {
     this.clearFlushTimer()
 
-    if (this.assembler.hasEndedUtterance) {
+    if (!this.assembler.hasEndedUtterance) {
+      return
+    }
+
+    // Nothing more arrives for an utterance that is not being translated.
+    if (!this.options.targetLanguage) {
+      this.assembler.flush()
+    } else {
       this.flushTimer = setTimeout(() => {
         this.flushTimer = null
         this.assembler.flush()
