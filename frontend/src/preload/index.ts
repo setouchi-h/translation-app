@@ -1,6 +1,21 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
+/** Listens to a channel from the main process. Calling the result stops listening. */
+function subscribe(channel: string): (callback: (payload: unknown) => void) => () => void {
+  return (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+      callback(payload)
+    }
+
+    ipcRenderer.on(channel, listener)
+
+    return () => {
+      ipcRenderer.removeListener(channel, listener)
+    }
+  }
+}
+
 // Custom APIs for renderer
 const api = {
   translation: {
@@ -12,52 +27,31 @@ const api = {
     }) => ipcRenderer.invoke('translation:start', request),
     sendAudioChunk: (chunk: { pcm16Base64: string }) =>
       ipcRenderer.send('translation:audio-chunk', chunk),
-    onEvent: (callback: (event: unknown) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
-        callback(payload)
-      }
-
-      ipcRenderer.on('translation:event', listener)
-
-      return () => {
-        ipcRenderer.removeListener('translation:event', listener)
-      }
-    },
+    onEvent: subscribe('translation:event'),
     translateText: (request: { text: string }) =>
       ipcRenderer.invoke('translation:translate-text', request),
     streamText: (request: { requestId: number; text: string }) =>
       ipcRenderer.send('translation:translate-text-stream', request),
     cancelText: (request?: { requestId?: number }) =>
       ipcRenderer.send('translation:cancel-text-translation', request),
-    onTextEvent: (callback: (event: unknown) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
-        callback(payload)
-      }
-
-      ipcRenderer.on('translation:text-event', listener)
-
-      return () => {
-        ipcRenderer.removeListener('translation:text-event', listener)
-      }
-    },
+    onTextEvent: subscribe('translation:text-event'),
     stop: () => ipcRenderer.invoke('translation:stop')
   },
   capture: {
     listApps: () => ipcRenderer.invoke('capture:list-apps'),
-    onEvent: (callback: (event: unknown) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
-        callback(payload)
-      }
-
-      ipcRenderer.on('capture:event', listener)
-
-      return () => {
-        ipcRenderer.removeListener('capture:event', listener)
-      }
-    }
+    onEvent: subscribe('capture:event')
   },
   transcripts: {
     openFolder: () => ipcRenderer.invoke('transcripts:open-folder')
+  },
+  overlay: {
+    setVisible: (visible: boolean) => ipcRenderer.send('overlay:set-visible', visible),
+    onVisibility: subscribe('overlay:visibility'),
+    pushState: (state: unknown) => ipcRenderer.send('overlay:push-state', state),
+    getState: () => ipcRenderer.invoke('overlay:get-state'),
+    startDrag: () => ipcRenderer.send('overlay:drag-start'),
+    dragBy: (offset: { x: number; y: number }) => ipcRenderer.send('overlay:drag-move', offset),
+    onState: subscribe('overlay:state')
   }
 }
 

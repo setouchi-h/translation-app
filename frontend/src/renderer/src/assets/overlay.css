@@ -1,0 +1,108 @@
+/* The floating caption window: the same page loaded with #overlay. */
+html.overlay,
+html.overlay body {
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+}
+
+.overlay-shell {
+  display: flex;
+  height: 100vh;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  background: rgba(10, 12, 16, 0.55);
+}
+
+.overlay-handle {
+  position: relative;
+  display: flex;
+  flex: 0 0 22px;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  -webkit-app-region: drag;
+}
+
+.overlay-grip {
+  width: 44px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.overlay-close {
+  position: absolute;
+  top: 3px;
+  right: 8px;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.5;
+  -webkit-app-region: no-drag;
+}
+
+.overlay-close:hover {
+  background: rgba(222, 91, 80, 0.9);
+  color: #ffffff;
+  opacity: 1;
+}
+
+.overlay-shell .caption-scroll {
+  display: flex;
+  flex-direction: column;
+  padding: 0 22px 14px;
+  cursor: grab;
+  /* Dragging here moves the window, so it cannot also select text. */
+  user-select: none;
+}
+
+/* Until there is enough to scroll, captions sit at the bottom edge. */
+.overlay-shell .caption-scroll > :first-child {
+  margin-top: auto;
+}
+
+.overlay-shell .caption-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.overlay-shell .caption-scroll::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.overlay-shell .caption-entry {
+  flex: 0 0 auto;
+}
+
+.overlay-shell .caption-entry + .caption-entry {
+  margin-top: 8px;
+}
+
+.overlay-shell .caption-empty {
+  padding: 0 0 6px;
+}
+
+.overlay-shell .caption-source,
+.overlay-shell .caption-translation {
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
+.overlay-shell .caption-source {
+  color: rgba(237, 242, 247, 0.72);
+  font-size: 15px;
+}
+
+.overlay-shell .caption-translation {
+  color: #ffffff;
+  font-size: 24px;
+}

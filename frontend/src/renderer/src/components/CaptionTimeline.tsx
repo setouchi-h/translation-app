@@ -1,17 +1,11 @@
 import { memo, useLayoutEffect, useRef, useState } from 'react'
-
-/** One utterance: what was said and its translation, filled in as each arrives. */
-export type CaptionEntry = {
-  key: string
-  speaker: string | null
-  source: string
-  translation: string
-  startedAt: number
-}
+import type { CaptionEntry } from '../../../shared/captions'
 
 type CaptionTimelineProps = {
   entries: CaptionEntry[]
   showSource: boolean
+  /** Speaker and time above each run of captions. The floating overlay leaves them out. */
+  showHeaders?: boolean
 }
 
 const SPEAKER_COLORS = ['#4fb7a5', '#e0b34f', '#7aa7f0', '#e0859a', '#a98ee6', '#8fc46a']
@@ -42,6 +36,23 @@ type CaptionRowProps = {
   isLatest: boolean
 }
 
+/**
+ * Compares the entry by value. The floating overlay receives its entries over IPC, so every
+ * update brings new objects even for captions that did not change.
+ */
+function areRowsEqual(previous: CaptionRowProps, next: CaptionRowProps): boolean {
+  return (
+    previous.showHeader === next.showHeader &&
+    previous.showSource === next.showSource &&
+    previous.isLatest === next.isLatest &&
+    previous.entry.key === next.entry.key &&
+    previous.entry.speaker === next.entry.speaker &&
+    previous.entry.source === next.entry.source &&
+    previous.entry.translation === next.entry.translation &&
+    previous.entry.startedAt === next.entry.startedAt
+  )
+}
+
 const CaptionRow = memo(function CaptionRow({
   entry,
   showHeader,
@@ -70,7 +81,7 @@ const CaptionRow = memo(function CaptionRow({
       )}
     </article>
   )
-})
+}, areRowsEqual)
 
 /**
  * Scrolling log of utterances. It follows the newest caption only while the view is already
@@ -78,7 +89,8 @@ const CaptionRow = memo(function CaptionRow({
  */
 export const CaptionTimeline = memo(function CaptionTimeline({
   entries,
-  showSource
+  showSource,
+  showHeaders = true
 }: CaptionTimelineProps): React.JSX.Element {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const stickToBottomRef = useRef(true)
@@ -123,9 +135,10 @@ export const CaptionTimeline = memo(function CaptionTimeline({
           entries.map((entry, index) => {
             const previous = entries[index - 1]
             const showHeader =
-              !previous ||
-              previous.speaker !== entry.speaker ||
-              formatTime(previous.startedAt) !== formatTime(entry.startedAt)
+              showHeaders &&
+              (!previous ||
+                previous.speaker !== entry.speaker ||
+                formatTime(previous.startedAt) !== formatTime(entry.startedAt))
 
             return (
               <CaptionRow

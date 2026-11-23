@@ -1,5 +1,6 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import type { AppAudioSelection, CaptureApp, CaptureEvent } from '../shared/capture'
+import type { CaptionOverlayState } from '../shared/captions'
 
 type TranslationStartRequest = {
   inputDeviceId: string
@@ -80,6 +81,17 @@ type AppAPI = {
   transcripts: {
     /** Resolves to an empty string on success, or an error message. */
     openFolder: () => Promise<string>
+  }
+  /** The floating caption window. The main window drives it; the overlay only listens. */
+  overlay: {
+    setVisible: (visible: boolean) => void
+    onVisibility: (callback: (visible: boolean) => void) => () => void
+    pushState: (state: CaptionOverlayState) => void
+    getState: () => Promise<CaptionOverlayState | null>
+    onState: (callback: (state: CaptionOverlayState) => void) => () => void
+    /** Called by the overlay itself: start moving its window, then report the pointer's offset. */
+    startDrag: () => void
+    dragBy: (offset: { x: number; y: number }) => void
   }
 }
 

@@ -2,12 +2,15 @@ import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { existsSync } from 'fs'
 import { mkdir } from 'fs/promises'
 import { join } from 'path'
-import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { electronApp, optimizer } from '@electron-toolkit/utils'
 import { config as loadEnvFile } from 'dotenv'
 import icon from '../../resources/icon.png?asset'
 import type { AppAudioSelection, CaptureApp, CaptureEvent } from '../shared/capture'
+import type { CaptionOverlayState } from '../shared/captions'
 import { AppAudioCapture, isAppAudioCaptureSupported, listCaptureApps } from './appAudioCapture'
+import { CaptionOverlay } from './captionOverlay'
 import { CaptionSession, type CaptionStartRequest } from './captionSession'
+import { loadRendererPage, PRELOAD_PATH } from './rendererPage'
 import {
   translateJapaneseTextToEnglish,
   streamJapaneseTextToEnglish,
@@ -23,6 +26,8 @@ type StartRequest = CaptionStartRequest & {
 let activeTranslation: CaptionSession | null = null
 let activeCapture: AppAudioCapture | null = null
 let isQuittingAfterStop = false
+let mainWindow: BrowserWindow | null = null
+let captionOverlay: CaptionOverlay | null = null
 const activeTextTranslations = new Map<string, AbortController>()
 
 function getErrorMessage(error: unknown): string {
@@ -114,34 +119,38 @@ function loadLocalEnv(): void {
 
 function createWindow(): void {
   // Create the browser window.
-  const mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     width: 900,
     height: 670,
     show: false,
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
+      preload: PRELOAD_PATH,
       sandbox: false
     }
   })
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
+  mainWindow = window
+
+  window.on('ready-to-show', () => {
+    window.show()
   })
 
-  mainWindow.webContents.setWindowOpenHandler((details) => {
+  // The overlay has no controls of its own, so it goes away with the window that drives it.
+  window.on('closed', () => {
+    if (mainWindow === window) {
+      mainWindow = null
+    }
+    captionOverlay?.destroy()
+  })
+
+  window.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
   })
 
-  // HMR for renderer base on electron-vite cli.
-  // Load the remote URL for development or the local html file for production.
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
-  } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
-  }
+  loadRendererPage(window)
 }
 
 // This method will be called when Electron has finished
@@ -259,6 +268,33 @@ app.whenReady().then(() => {
   ipcMain.on('translation:cancel-text-translation', (event, request?: { requestId?: number }) => {
     cancelTextTranslations(event.sender.id, request?.requestId)
   })
+
+  captionOverlay = new CaptionOverlay(
+    join(app.getPath('userData'), 'caption-overlay.json'),
+    (visible) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('overlay:visibility', visible)
+      }
+    }
+  )
+
+  ipcMain.on('overlay:set-visible', (_event, visible: boolean) => {
+    captionOverlay?.setVisible(visible)
+  })
+
+  ipcMain.on('overlay:push-state', (_event, state: CaptionOverlayState) => {
+    captionOverlay?.setState(state)
+  })
+
+  ipcMain.on('overlay:drag-start', () => {
+    captionOverlay?.beginDrag()
+  })
+
+  ipcMain.on('overlay:drag-move', (_event, offset: { x: number; y: number }) => {
+    captionOverlay?.dragBy(offset.x, offset.y)
+  })
+
+  ipcMain.handle('overlay:get-state', () => captionOverlay?.getState() ?? null)
 
   createWindow()
 
