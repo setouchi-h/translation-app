@@ -4,18 +4,14 @@ import { electronAPI } from '@electron-toolkit/preload'
 // Custom APIs for renderer
 const api = {
   translation: {
-    start: (request: { inputDeviceId: string; targetLanguage: string; saveTranscript?: boolean }) =>
-      ipcRenderer.invoke('translation:start', request),
-    sendAudioChunk: (chunk: {
-      sequence: number
-      sampleRate: number
-      durationMs: number
-      pcm16Base64: string
-      byteLength: number
-      level: number
+    start: (request: {
       inputDeviceId: string
       targetLanguage: string
-    }) => ipcRenderer.send('translation:audio-chunk', chunk),
+      saveTranscript?: boolean
+      appAudio?: { mode: 'include' | 'exclude'; appIds: string[] }
+    }) => ipcRenderer.invoke('translation:start', request),
+    sendAudioChunk: (chunk: { pcm16Base64: string }) =>
+      ipcRenderer.send('translation:audio-chunk', chunk),
     onEvent: (callback: (event: unknown) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
         callback(payload)
@@ -45,6 +41,20 @@ const api = {
       }
     },
     stop: () => ipcRenderer.invoke('translation:stop')
+  },
+  capture: {
+    listApps: () => ipcRenderer.invoke('capture:list-apps'),
+    onEvent: (callback: (event: unknown) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+        callback(payload)
+      }
+
+      ipcRenderer.on('capture:event', listener)
+
+      return () => {
+        ipcRenderer.removeListener('capture:event', listener)
+      }
+    }
   },
   transcripts: {
     openFolder: () => ipcRenderer.invoke('transcripts:open-folder')

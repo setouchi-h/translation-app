@@ -40,6 +40,63 @@ textarea {
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.26);
 }
 
+.app-picker {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  max-height: 76px;
+  overflow-y: auto;
+}
+
+.app-chip {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 999px;
+  padding: 0 11px;
+  background: #11141b;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.app-chip:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.app-chip:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(79, 183, 165, 0.3);
+}
+
+.app-chip[aria-pressed='true'] {
+  border-color: #4fb7a5;
+  background: rgba(45, 157, 142, 0.24);
+  color: #f7fafc;
+}
+
+.app-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.app-chip-playing {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #5fd6c2;
+}
+
+.app-picker-hint {
+  color: rgba(237, 242, 247, 0.64);
+  font-size: 12px;
+}
+
 .field {
   display: flex;
   min-width: 0;

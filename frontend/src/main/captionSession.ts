@@ -1,7 +1,6 @@
 import type { WebContents } from 'electron'
 import {
   RealtimeTranslationSession,
-  type TranslationAudioChunk,
   type TranslationRendererEvent,
   type TranslationStartRequest
 } from './realtimeTranslation'
@@ -119,12 +118,10 @@ export class CaptionSession {
     }
   }
 
-  sendAudioChunk(chunk: TranslationAudioChunk): void {
-    if (this.soniox) {
-      this.soniox.sendAudio(Buffer.from(chunk.pcm16Base64, 'base64'))
-    } else {
-      this.openai?.sendAudioChunk(chunk)
-    }
+  /** Takes 24 kHz mono PCM16. */
+  sendAudio(pcm16: Buffer): void {
+    this.soniox?.sendAudio(pcm16)
+    this.openai?.sendAudio(pcm16)
   }
 
   stop(): Promise<void> {
