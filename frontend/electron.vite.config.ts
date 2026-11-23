@@ -11,6 +11,11 @@ export default defineConfig({
         '@renderer': resolve('src/renderer/src')
       }
     },
+    build: {
+      // Small scripts would be inlined as data: URLs, which the page's CSP (script-src 'self')
+      // refuses. That broke loading the audio worklet in built apps.
+      assetsInlineLimit: (filePath) => (filePath.endsWith('.js') ? false : undefined)
+    },
     plugins: [react()]
   }
 })
