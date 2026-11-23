@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { CaptureEvent } from '../../shared/capture'
+import { AppPicker } from './components/AppPicker'
 import { CaptionTimeline, type CaptionEntry } from './components/CaptionTimeline'
+import { APP_SOURCES, useInputSource } from './hooks/useInputSource'
+import { loadPreference, storePreference } from './storage'
 
 type CaptureStatus = 'idle' | 'loading-devices' | 'ready' | 'starting' | 'listening' | 'error'
 
@@ -60,22 +64,11 @@ const TARGET_LANGUAGES = [
 const TEXT_TRANSLATION_DEBOUNCE_MS = 120
 const SAVE_TRANSCRIPT_STORAGE_KEY = 'saveTranscript'
 
-function loadSaveTranscriptPreference(): boolean {
-  try {
-    return window.localStorage.getItem(SAVE_TRANSCRIPT_STORAGE_KEY) !== 'false'
-  } catch {
-    return true
-  }
-}
-
 const SHOW_SOURCE_STORAGE_KEY = 'showOriginal'
 
-function loadShowSourcePreference(): boolean {
-  try {
-    return window.localStorage.getItem(SHOW_SOURCE_STORAGE_KEY) !== 'false'
-  } catch {
-    return true
-  }
+/** Both toggles are on unless they were turned off. */
+function loadTogglePreference(key: string): boolean {
+  return loadPreference(key) !== 'false'
 }
 
 type CaptionStream = 'source' | 'translation'
@@ -117,16 +110,18 @@ function updateCaptionEntry(
 }
 
 function App(): React.JSX.Element {
-  const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([])
-  const [selectedInputId, setSelectedInputId] = useState('')
+  const input = useInputSource()
+  const { refresh: refreshSources } = input
   const [targetLanguage, setTargetLanguage] = useState('ja')
   const [status, setStatus] = useState<CaptureStatus>('idle')
   const [statusText, setStatusText] = useState('Ready')
   const [audioLevel, setAudioLevel] = useState(0)
-  const [saveTranscript, setSaveTranscript] = useState(loadSaveTranscriptPreference)
+  const [saveTranscript, setSaveTranscript] = useState(() =>
+    loadTogglePreference(SAVE_TRANSCRIPT_STORAGE_KEY)
+  )
   const [isSavingTranscript, setIsSavingTranscript] = useState(false)
   const [captionEntries, setCaptionEntries] = useState<CaptionEntry[]>([])
-  const [showSource, setShowSource] = useState(loadShowSourcePreference)
+  const [showSource, setShowSource] = useState(() => loadTogglePreference(SHOW_SOURCE_STORAGE_KEY))
   const [textInput, setTextInput] = useState('')
   const [textTranslation, setTextTranslation] = useState('')
   const [textTranslationStatus, setTextTranslationStatus] = useState<TextTranslationStatus>('idle')
@@ -143,12 +138,15 @@ function App(): React.JSX.Element {
     translation: { index: 0, open: false }
   })
   const textTranslationRequestRef = useRef(0)
+  const sourceLabelRef = useRef('')
 
-  const selectedInput = useMemo(
-    () => audioInputs.find((input) => input.deviceId === selectedInputId),
-    [audioInputs, selectedInputId]
-  )
-  const canStart = audioInputs.length > 0 && status !== 'loading-devices' && status !== 'starting'
+  const isBusy = status === 'listening' || status === 'starting'
+  const canStart = input.isReady && status !== 'loading-devices' && status !== 'starting'
+
+  useEffect(() => {
+    sourceLabelRef.current = input.label
+  }, [input.label])
+
   const textTranslationDisplay = useMemo(() => {
     if (textTranslation) {
       return textTranslation
@@ -180,21 +178,18 @@ function App(): React.JSX.Element {
       setStatus((current) => (current === 'listening' ? current : 'loading-devices'))
 
       try {
-        const devices = await navigator.mediaDevices.enumerateDevices()
-        const inputs = devices.filter((device) => device.kind === 'audioinput')
+        const hasAnySource = await refreshSources()
 
-        setAudioInputs(inputs)
-        setSelectedInputId((current) => current || inputs[0]?.deviceId || '')
         setStatus((current) => (current === 'listening' ? current : 'ready'))
         if (!options.keepStatusText) {
-          setStatusText(inputs.length > 0 ? 'Ready' : 'No audio input devices found.')
+          setStatusText(hasAnySource ? 'Ready' : 'No audio input devices found.')
         }
       } catch (error) {
         setStatus('error')
         setStatusText(error instanceof Error ? error.message : 'Failed to read audio devices.')
       }
     },
-    []
+    [refreshSources]
   )
 
   const stopAudioLevelLoop = useCallback((): void => {
@@ -228,6 +223,18 @@ function App(): React.JSX.Element {
     setAudioLevel(0)
   }, [stopAudioLevelLoop])
 
+  /** Ends the session and leaves the reason in the status line. */
+  const failSession = useCallback(
+    async (message: string): Promise<void> => {
+      await stopCapture()
+      await window.api?.translation?.stop()
+      setIsSavingTranscript(false)
+      setStatus('error')
+      setStatusText(message)
+    },
+    [stopCapture]
+  )
+
   const startAudioPipeline = async (stream: MediaStream): Promise<void> => {
     const audioContext = new AudioContext()
     await audioContext.audioWorklet.addModule(new URL('./audio/pcm16-worklet.js', import.meta.url))
@@ -253,11 +260,7 @@ function App(): React.JSX.Element {
         return
       }
 
-      window.api?.translation?.sendAudioChunk({
-        ...event.data,
-        inputDeviceId: selectedInputId || 'default',
-        targetLanguage
-      })
+      window.api?.translation?.sendAudioChunk({ pcm16Base64: event.data.pcm16Base64 })
     }
 
     source.connect(analyser)
@@ -302,22 +305,26 @@ function App(): React.JSX.Element {
         throw new Error('Electron preload API is unavailable.')
       }
 
-      const audioConstraints: MediaTrackConstraints = {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false
+      // App audio is captured by the main process, so no stream is opened here.
+      let stream: MediaStream | null = null
+      if (!input.appAudio) {
+        const audioConstraints: MediaTrackConstraints = {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false
+        }
+
+        if (input.source) {
+          audioConstraints.deviceId = { exact: input.source }
+        }
+
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: audioConstraints,
+          video: false
+        })
+        streamRef.current = stream
       }
 
-      if (selectedInputId) {
-        audioConstraints.deviceId = { exact: selectedInputId }
-      }
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: audioConstraints,
-        video: false
-      })
-
-      streamRef.current = stream
       segmentCountersRef.current = {
         source: { index: 0, open: false },
         translation: { index: 0, open: false }
@@ -325,22 +332,21 @@ function App(): React.JSX.Element {
       setCaptionEntries([])
 
       const session = await window.api.translation.start({
-        inputDeviceId: selectedInputId || 'default',
+        inputDeviceId: input.source || 'default',
         targetLanguage,
-        saveTranscript
+        saveTranscript,
+        appAudio: input.appAudio ?? undefined
       })
       setIsSavingTranscript(session.transcriptPath !== null)
-      await startAudioPipeline(stream)
+      if (stream) {
+        await startAudioPipeline(stream)
+      }
 
       setStatus('listening')
-      setStatusText(`Listening to ${selectedInput?.label || 'selected input'}`)
+      setStatusText(`Listening to ${input.label}`)
       await loadAudioInputs({ keepStatusText: true })
     } catch (error) {
-      await stopCapture()
-      await window.api?.translation?.stop()
-      setIsSavingTranscript(false)
-      setStatus('error')
-      setStatusText(error instanceof Error ? error.message : 'Failed to start audio capture.')
+      await failSession(error instanceof Error ? error.message : 'Failed to start audio capture.')
     }
   }
 
@@ -356,20 +362,12 @@ function App(): React.JSX.Element {
 
   const handleSaveTranscriptChange = (enabled: boolean): void => {
     setSaveTranscript(enabled)
-    try {
-      window.localStorage.setItem(SAVE_TRANSCRIPT_STORAGE_KEY, String(enabled))
-    } catch {
-      // The preference just won't persist.
-    }
+    storePreference(SAVE_TRANSCRIPT_STORAGE_KEY, String(enabled))
   }
 
   const handleShowSourceChange = (enabled: boolean): void => {
     setShowSource(enabled)
-    try {
-      window.localStorage.setItem(SHOW_SOURCE_STORAGE_KEY, String(enabled))
-    } catch {
-      // The preference just won't persist.
-    }
+    storePreference(SHOW_SOURCE_STORAGE_KEY, String(enabled))
   }
 
   const handleOpenTranscripts = async (): Promise<void> => {
@@ -427,11 +425,7 @@ function App(): React.JSX.Element {
         }
 
         if (event.type === 'error') {
-          void stopCapture()
-          void window.api?.translation?.stop()
-          setIsSavingTranscript(false)
-          setStatus('error')
-          setStatusText(event.message)
+          void failSession(event.message)
           return
         }
 
@@ -453,7 +447,30 @@ function App(): React.JSX.Element {
       window.clearTimeout(timeoutId)
       void stopCapture()
     }
-  }, [loadAudioInputs, stopCapture])
+  }, [failSession, loadAudioInputs, stopCapture])
+
+  useEffect(() => {
+    return window.api?.capture?.onEvent((event: CaptureEvent) => {
+      if (event.type === 'level') {
+        setAudioLevel(event.level)
+        return
+      }
+
+      if (event.type === 'waiting') {
+        setStatusText(`Waiting for ${sourceLabelRef.current} to open`)
+        return
+      }
+
+      if (event.type === 'capturing') {
+        setStatusText(`Listening to ${sourceLabelRef.current}`)
+        return
+      }
+
+      setStatusText(
+        'No audio is arriving. Allow this app under System Settings › Privacy & Security › Screen & System Audio Recording.'
+      )
+    })
+  }, [])
 
   useEffect(() => {
     const unsubscribe =
@@ -559,18 +576,27 @@ function App(): React.JSX.Element {
         <label className="field field-device">
           <span>Input</span>
           <select
-            value={selectedInputId}
-            onChange={(event) => setSelectedInputId(event.target.value)}
-            disabled={status === 'listening' || status === 'starting'}
+            value={input.source}
+            onChange={(event) => input.selectSource(event.target.value)}
+            disabled={isBusy}
           >
-            {audioInputs.length === 0 ? (
+            {input.isAppCaptureSupported && (
+              <optgroup label="App audio">
+                <option value={APP_SOURCES.include}>Selected apps</option>
+                <option value={APP_SOURCES.exclude}>All audio except selected apps</option>
+              </optgroup>
+            )}
+            {input.audioInputs.length === 0 && !input.isAppCaptureSupported && (
               <option value="">No input devices</option>
-            ) : (
-              audioInputs.map((input, index) => (
-                <option key={input.deviceId} value={input.deviceId}>
-                  {input.label || `Audio input ${index + 1}`}
-                </option>
-              ))
+            )}
+            {input.audioInputs.length > 0 && (
+              <optgroup label="Input devices">
+                {input.audioInputs.map((device, index) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label || `Audio input ${index + 1}`}
+                  </option>
+                ))}
+              </optgroup>
             )}
           </select>
         </label>
@@ -580,7 +606,7 @@ function App(): React.JSX.Element {
           <select
             value={targetLanguage}
             onChange={(event) => setTargetLanguage(event.target.value)}
-            disabled={status === 'listening' || status === 'starting'}
+            disabled={isBusy}
           >
             {TARGET_LANGUAGES.map((language) => (
               <option key={language.value} value={language.value}>
@@ -613,6 +639,15 @@ function App(): React.JSX.Element {
             Start
           </button>
         )}
+
+        {input.appMode && (
+          <AppPicker
+            apps={input.appChoices}
+            disabled={isBusy}
+            hint={input.isReady ? undefined : 'Choose at least one app.'}
+            onToggle={input.toggleApp}
+          />
+        )}
       </section>
 
       <section className="status-row" aria-live="polite">
@@ -629,7 +664,7 @@ function App(): React.JSX.Element {
             type="checkbox"
             checked={saveTranscript}
             onChange={(event) => handleSaveTranscriptChange(event.target.checked)}
-            disabled={status === 'listening' || status === 'starting'}
+            disabled={isBusy}
           />
           <span>Save transcript</span>
         </label>

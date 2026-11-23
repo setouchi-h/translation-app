@@ -10,17 +10,6 @@ export type TranslationStartRequest = {
   targetLanguage: string
 }
 
-export type TranslationAudioChunk = {
-  sequence: number
-  sampleRate: number
-  durationMs: number
-  pcm16Base64: string
-  byteLength: number
-  level: number
-  inputDeviceId: string
-  targetLanguage: string
-}
-
 export type TranslationSession = {
   id: string
   inputDeviceId: string
@@ -29,7 +18,6 @@ export type TranslationSession = {
   audioChunksReceived: number
   audioBytesReceived: number
   lastAudioAt?: string
-  lastAudioLevel?: number
 }
 
 export type TranslationStopResult = {
@@ -138,7 +126,7 @@ export class RealtimeTranslationSession {
     return this.session
   }
 
-  sendAudioChunk(chunk: TranslationAudioChunk): void {
+  sendAudio(pcm16: Buffer): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       return
     }
@@ -146,14 +134,13 @@ export class RealtimeTranslationSession {
     this.socket.send(
       JSON.stringify({
         type: 'session.input_audio_buffer.append',
-        audio: chunk.pcm16Base64
+        audio: pcm16.toString('base64')
       })
     )
 
     this.session.audioChunksReceived += 1
-    this.session.audioBytesReceived += chunk.byteLength
+    this.session.audioBytesReceived += pcm16.length
     this.session.lastAudioAt = new Date().toISOString()
-    this.session.lastAudioLevel = chunk.level
   }
 
   async stop(): Promise<TranslationStopResult> {

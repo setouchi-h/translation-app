@@ -29,7 +29,29 @@ Tauri も候補だったが、WebView の音声入力まわりが OS 依存に�
 
 ## 音声取得方式
 
-Phase 1 は仮想オーディオ方式。
+### アプリ音声の直接取得（macOS 14.2 以降、既定）
+
+仮想オーディオデバイスなしで、選んだアプリの音だけを取得する。
+
+- Input で「Selected apps」を選び、対象アプリ（既定は Discord）を選んで Start を押す
+- 「All audio except selected apps」は、選んだアプリ以外のすべての音を取得する。何も選ばなければ PC 全体の音になる
+- 選んだアプリは「Selected apps」と「All audio except selected apps」で別々に記憶される
+- 初回は macOS の「システムオーディオ録音」の許可が必要になる場合がある
+
+実装:
+
+- `frontend/native/mac/AppAudioTap.swift`: Core Audio のプロセスタップで音声を取得し、24kHz モノラル PCM16 を標準出力に流すコマンド
+- `frontend/src/main/appAudioCapture.ts`: コマンドを起動し、100ms のチャンクにして字幕セッションへ渡す
+- `frontend/src/shared/capture.ts`: main、preload、renderer で共有する型
+- `frontend/src/renderer/src/hooks/useInputSource.ts`: 入力元（アプリまたは入力デバイス）の選択と保存
+- `npm run build:native` でコマンドを `frontend/resources/bin/` にビルドする（`dev` と `build` から自動で実行される）
+
+制約:
+
+- アプリ単位でしか分けられない。ブラウザはタブごとに分離できず、ゲーム内ボイスチャットは声とゲーム音を分離できない
+- Windows は未対応（下の仮想オーディオ方式を使う）
+
+### 仮想オーディオ方式（Windows、古い macOS）
 
 macOS:
 
@@ -71,7 +93,7 @@ macOS の例:
 - 翻訳音声を Discord に戻す
 - Zoom 対応
 - 話者分離
-- macOS ScreenCaptureKit による直接アプリ音声キャプチャ
+- Windows でのアプリ音声の直接取得
 - 配布用 notarization / signing
 
 ## 技術構成

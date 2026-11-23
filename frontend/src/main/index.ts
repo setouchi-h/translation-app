@@ -5,8 +5,9 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { config as loadEnvFile } from 'dotenv'
 import icon from '../../resources/icon.png?asset'
+import type { AppAudioSelection, CaptureApp, CaptureEvent } from '../shared/capture'
+import { AppAudioCapture, isAppAudioCaptureSupported, listCaptureApps } from './appAudioCapture'
 import { CaptionSession, type CaptionStartRequest } from './captionSession'
-import type { TranslationAudioChunk } from './realtimeTranslation'
 import {
   translateJapaneseTextToEnglish,
   streamJapaneseTextToEnglish,
@@ -14,7 +15,13 @@ import {
   type TextTranslationStreamRequest
 } from './textTranslation'
 
+type StartRequest = CaptionStartRequest & {
+  /** Capture these apps directly instead of receiving audio chunks from the renderer. */
+  appAudio?: AppAudioSelection
+}
+
 let activeTranslation: CaptionSession | null = null
+let activeCapture: AppAudioCapture | null = null
 let isQuittingAfterStop = false
 const activeTextTranslations = new Map<string, AbortController>()
 
@@ -41,6 +48,51 @@ function cancelTextTranslations(webContentsId: number, requestId?: number): void
       activeTextTranslations.delete(key)
     }
   }
+}
+
+/** Stops the audio first so the session can deliver the tail of what was already sent. */
+async function stopActiveSession(): Promise<CaptionSession | null> {
+  const capture = activeCapture
+  const session = activeTranslation
+  activeCapture = null
+  activeTranslation = null
+
+  await capture?.stop()
+  await session?.stop()
+
+  return session
+}
+
+function startAppAudioCapture(
+  selection: AppAudioSelection,
+  session: CaptionSession,
+  renderer: Electron.WebContents
+): AppAudioCapture {
+  const send = (event: CaptureEvent): void => {
+    if (!renderer.isDestroyed()) {
+      renderer.send('capture:event', event)
+    }
+  }
+
+  const capture = new AppAudioCapture(selection, {
+    onAudio: (pcm16, level) => {
+      session.sendAudio(pcm16)
+      send({ type: 'level', level })
+    },
+    onStatus: send,
+    onFailure: (message) => {
+      if (activeCapture === capture) {
+        activeCapture = null
+      }
+      // Reported like any other session error, so the renderer ends the session the same way.
+      if (!renderer.isDestroyed()) {
+        renderer.send('translation:event', { type: 'error', message })
+      }
+    }
+  })
+
+  capture.start()
+  return capture
 }
 
 function getTranscriptsDirectory(): string {
@@ -108,35 +160,52 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  ipcMain.handle('translation:start', async (event, request: CaptionStartRequest) => {
-    if (activeTranslation) {
-      const previous = activeTranslation
-      activeTranslation = null
-      await previous.stop()
+  ipcMain.handle('translation:start', async (event, request: StartRequest) => {
+    await stopActiveSession()
+
+    const { appAudio } = request
+    if (appAudio && !isAppAudioCaptureSupported()) {
+      throw new Error('App audio capture is not available on this system.')
     }
 
     const session = new CaptionSession(request, event.sender, getTranscriptsDirectory())
     activeTranslation = session
 
     try {
-      return await session.start()
+      const info = await session.start()
+
+      // Another start or a stop may have replaced this session while it was connecting.
+      if (appAudio && activeTranslation === session) {
+        activeCapture = startAppAudioCapture(appAudio, session, event.sender)
+      }
+
+      return info
     } catch (error) {
       if (activeTranslation === session) {
         activeTranslation = null
       }
+      await session.stop()
       throw error
     }
   })
 
-  ipcMain.on('translation:audio-chunk', (_event, chunk: TranslationAudioChunk) => {
-    activeTranslation?.sendAudioChunk(chunk)
+  ipcMain.handle(
+    'capture:list-apps',
+    async (): Promise<{ supported: boolean; apps: CaptureApp[] }> => {
+      if (!isAppAudioCaptureSupported()) {
+        return { supported: false, apps: [] }
+      }
+
+      return { supported: true, apps: await listCaptureApps() }
+    }
+  )
+
+  ipcMain.on('translation:audio-chunk', (_event, chunk: { pcm16Base64: string }) => {
+    activeTranslation?.sendAudio(Buffer.from(chunk.pcm16Base64, 'base64'))
   })
 
   ipcMain.handle('translation:stop', async () => {
-    const session = activeTranslation
-    activeTranslation = null
-
-    await session?.stop()
+    const session = await stopActiveSession()
 
     return {
       stopped: session !== null,
@@ -202,16 +271,14 @@ app.whenReady().then(() => {
 
 // Let a running session flush its transcript before the app exits.
 app.on('before-quit', (event) => {
-  if (!activeTranslation || isQuittingAfterStop) {
+  if ((!activeTranslation && !activeCapture) || isQuittingAfterStop) {
     return
   }
 
   event.preventDefault()
   isQuittingAfterStop = true
 
-  const session = activeTranslation
-  activeTranslation = null
-  void session.stop().finally(() => app.quit())
+  void stopActiveSession().finally(() => app.quit())
 })
 
 // Quit when all windows are closed, except on macOS. There, it's common

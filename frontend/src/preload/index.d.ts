@@ -1,9 +1,12 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
+import type { AppAudioSelection, CaptureApp, CaptureEvent } from '../shared/capture'
 
 type TranslationStartRequest = {
   inputDeviceId: string
   targetLanguage: string
   saveTranscript?: boolean
+  /** When set, the main process captures these apps and no audio chunks need to be sent. */
+  appAudio?: AppAudioSelection
 }
 
 type TranslationSession = {
@@ -14,15 +17,9 @@ type TranslationSession = {
   transcriptPath: string | null
 }
 
+/** A block of 24 kHz mono PCM16 audio from the renderer's audio worklet. */
 type TranslationAudioChunk = {
-  sequence: number
-  sampleRate: number
-  durationMs: number
   pcm16Base64: string
-  byteLength: number
-  level: number
-  inputDeviceId: string
-  targetLanguage: string
 }
 
 type TranslationStopResult = {
@@ -74,6 +71,11 @@ type AppAPI = {
     cancelText: (request?: { requestId?: number }) => void
     onTextEvent: (callback: (event: TextTranslationEvent) => void) => () => void
     stop: () => Promise<TranslationStopResult>
+  }
+  capture: {
+    /** `supported` is false where per-app capture is unavailable (not macOS 14.2+). */
+    listApps: () => Promise<{ supported: boolean; apps: CaptureApp[] }>
+    onEvent: (callback: (event: CaptureEvent) => void) => () => void
   }
   transcripts: {
     /** Resolves to an empty string on success, or an error message. */
