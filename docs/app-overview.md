@@ -44,7 +44,7 @@ Tauri も候補だったが、WebView の音声入力まわりが OS 依存に�
 - `frontend/src/main/appAudioCapture.ts`: コマンドを起動し、100ms のチャンクにして字幕セッションへ渡す
 - `frontend/src/shared/capture.ts`: main、preload、renderer で共有する型
 - `frontend/src/renderer/src/hooks/useInputSource.ts`: 入力元（アプリまたは入力デバイス）の選択と保存
-- `npm run build:native` でコマンドを `frontend/resources/bin/` にビルドする（`dev` と `build` から自動で実行される）
+- `pnpm run build:native` でコマンドを `frontend/resources/bin/` にビルドする（`dev` と `build` から自動で実行される）
 
 制約:
 
