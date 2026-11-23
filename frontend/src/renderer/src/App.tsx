@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CaptureEvent } from '../../shared/capture'
 import { AppPicker } from './components/AppPicker'
-import { CaptionTimeline, type CaptionEntry } from './components/CaptionTimeline'
+import type { CaptionEntry } from '../../shared/captions'
+import { CaptionTimeline } from './components/CaptionTimeline'
+import { useCaptionOverlay } from './hooks/useCaptionOverlay'
 import { APP_SOURCES, useInputSource } from './hooks/useInputSource'
 import { loadPreference, storePreference } from './storage'
 
@@ -122,6 +124,7 @@ function App(): React.JSX.Element {
   const [isSavingTranscript, setIsSavingTranscript] = useState(false)
   const [captionEntries, setCaptionEntries] = useState<CaptionEntry[]>([])
   const [showSource, setShowSource] = useState(() => loadTogglePreference(SHOW_SOURCE_STORAGE_KEY))
+  const overlay = useCaptionOverlay(captionEntries, showSource)
   const [textInput, setTextInput] = useState('')
   const [textTranslation, setTextTranslation] = useState('')
   const [textTranslationStatus, setTextTranslationStatus] = useState<TextTranslationStatus>('idle')
@@ -706,6 +709,14 @@ function App(): React.JSX.Element {
               onChange={(event) => handleShowSourceChange(event.target.checked)}
             />
             <span>Original</span>
+          </label>
+          <label className="save-toggle caption-toggle">
+            <input
+              type="checkbox"
+              checked={overlay.visible}
+              onChange={(event) => overlay.setVisible(event.target.checked)}
+            />
+            <span>Floating</span>
           </label>
         </div>
         <CaptionTimeline entries={captionEntries} showSource={showSource} />
