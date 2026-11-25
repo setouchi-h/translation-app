@@ -1,24 +1,18 @@
 import type { WebContents } from 'electron'
-import {
-  RealtimeTranslationSession,
-  type TranslationRendererEvent,
-  type TranslationStartRequest
-} from './realtimeTranslation'
+import type {
+  CaptionChannel,
+  CaptionProvider,
+  CaptionSessionEvent,
+  CaptionSessionInfo,
+  CaptionStartRequest
+} from '../shared/captions'
+import { RealtimeTranslationSession } from './realtimeTranslation'
 import { SonioxTranscriptionSession, type SourceUtterance } from './sonioxTranscription'
 import { TextSegmenter, TranscriptRecorder, type TextSegment } from './transcriptStore'
 
-export type CaptionProvider = 'soniox' | 'openai'
-
-export type CaptionStartRequest = TranslationStartRequest & {
-  saveTranscript?: boolean
-}
-
-export type CaptionSessionInfo = {
-  id: string
-  targetLanguage: string
-  startedAt: string
-  provider: CaptionProvider
-  transcriptPath: string | null
+/** Soniox when its key is set, otherwise OpenAI. */
+export function getCaptionProvider(): CaptionProvider {
+  return process.env.SONIOX_API_KEY ? 'soniox' : 'openai'
 }
 
 /**
@@ -29,10 +23,14 @@ export type CaptionSessionInfo = {
  * translation in one stream, already split into utterances. Without the key the session
  * falls back to OpenAI Realtime Translation, whose two transcript streams carry no
  * utterance boundaries and are split into sentences for the transcript file.
+ *
+ * The user's own microphone can be transcribed alongside, in a second Soniox stream
+ * without translation. Its captions and transcript records are marked as channel `me`.
  */
 export class CaptionSession {
   private readonly info: CaptionSessionInfo
   private readonly soniox: SonioxTranscriptionSession | null = null
+  private readonly microphone: SonioxTranscriptionSession | null = null
   private readonly openai: RealtimeTranslationSession | null = null
   private readonly recorder: TranscriptRecorder | null
   private readonly sourceSegmenter: TextSegmenter | null = null
@@ -43,7 +41,10 @@ export class CaptionSession {
   constructor(request: CaptionStartRequest, renderer: WebContents, transcriptsDirectory: string) {
     this.renderer = renderer
 
-    const provider: CaptionProvider = process.env.SONIOX_API_KEY ? 'soniox' : 'openai'
+    const provider = getCaptionProvider()
+    if (request.microphone && provider !== 'soniox') {
+      throw new Error('Transcribing your microphone needs SONIOX_API_KEY.')
+    }
     const startedAt = new Date().toISOString()
 
     this.recorder = request.saveTranscript
@@ -64,7 +65,41 @@ export class CaptionSession {
     }
 
     if (provider === 'soniox') {
-      this.soniox = new SonioxTranscriptionSession(request.targetLanguage, {
+      if (request.microphone) {
+        this.microphone = new SonioxTranscriptionSession(
+          {
+            targetLanguage: null,
+            speakerDiarization: false,
+            language: request.microphone.language
+          },
+          {
+            onLiveText: (text, utterance) =>
+              this.emit({
+                type: 'input-transcript-snapshot',
+                text,
+                utteranceId: utterance.id,
+                speaker: null,
+                channel: 'me'
+              }),
+            // The renderer pairs microphone captions by utterance id alone.
+            onSourceEnded: () => {},
+            onLiveTranslation: () => {},
+            onTranslationEnded: () => {},
+            onUtterance: (utterance) => this.recordUtterance(utterance, 'me'),
+            onError: (message) =>
+              this.emit({ type: 'error', message: `Soniox (microphone): ${message}` }),
+            onClosed: (reason) =>
+              this.emit({ type: 'closed', code: 0, reason: `Soniox (microphone) ${reason}` })
+          }
+        )
+      }
+
+      const options = {
+        targetLanguage: request.targetLanguage,
+        speakerDiarization: true,
+        language: null
+      }
+      this.soniox = new SonioxTranscriptionSession(options, {
         onLiveText: (text, utterance) =>
           this.emit({
             type: 'input-transcript-snapshot',
@@ -81,7 +116,7 @@ export class CaptionSession {
             speaker: utterance.speaker
           }),
         onTranslationEnded: () => this.emit({ type: 'output-transcript-done' }),
-        onUtterance: (utterance) => this.recordUtterance(utterance),
+        onUtterance: (utterance) => this.recordUtterance(utterance, 'them'),
         onError: (message) => this.emit({ type: 'error', message: `Soniox: ${message}` }),
         onClosed: (reason) => this.emit({ type: 'closed', code: 0, reason: `Soniox ${reason}` })
       })
@@ -101,7 +136,7 @@ export class CaptionSession {
   async start(): Promise<CaptionSessionInfo> {
     try {
       if (this.soniox) {
-        await this.soniox.start()
+        await Promise.all([this.soniox.start(), this.microphone?.start()])
         this.emit({ type: 'connected', sessionId: this.info.id })
       } else {
         await this.openai?.start()
@@ -124,20 +159,25 @@ export class CaptionSession {
     this.openai?.sendAudio(pcm16)
   }
 
+  /** Takes 24 kHz mono PCM16 from the user's microphone. */
+  sendMicAudio(pcm16: Buffer): void {
+    this.microphone?.sendAudio(pcm16)
+  }
+
   stop(): Promise<void> {
     this.stopResult ??= this.stopOnce()
     return this.stopResult
   }
 
   private async stopOnce(): Promise<void> {
-    await Promise.all([this.soniox?.stop(), this.openai?.stop()])
+    await Promise.all([this.soniox?.stop(), this.microphone?.stop(), this.openai?.stop()])
 
     this.sourceSegmenter?.flush()
     this.translationSegmenter?.flush()
     await this.recorder?.close()
   }
 
-  private handleOpenAiEvent(event: TranslationRendererEvent): void {
+  private handleOpenAiEvent(event: CaptionSessionEvent): void {
     if (event.type === 'input-transcript-delta') {
       this.sourceSegmenter?.push(event.delta, event.elapsedMs)
     } else if (event.type === 'input-transcript-done') {
@@ -160,10 +200,11 @@ export class CaptionSession {
     })
   }
 
-  private recordUtterance(utterance: SourceUtterance): void {
+  private recordUtterance(utterance: SourceUtterance, channel: CaptionChannel): void {
     this.recorder?.write({
       type: 'utterance',
-      t: new Date().toISOString(),
+      t: utterance.startedAt,
+      channel,
       speaker: utterance.speaker,
       language: utterance.language,
       startMs: utterance.startMs,
@@ -173,7 +214,7 @@ export class CaptionSession {
     })
   }
 
-  private emit(event: TranslationRendererEvent): void {
+  private emit(event: CaptionSessionEvent): void {
     if (!this.renderer.isDestroyed()) {
       this.renderer.send('translation:event', event)
     }

@@ -1,4 +1,5 @@
 import WebSocket, { type RawData } from 'ws'
+import type { CaptionSessionEvent } from '../shared/captions'
 
 const TRANSLATION_WEBSOCKET_URL =
   'wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate'
@@ -25,24 +26,6 @@ export type TranslationStopResult = {
   stoppedAt: string
   session: TranslationSession | null
 }
-
-/** Which utterance a snapshot belongs to, when the provider splits speech into utterances. */
-export type CaptionUtteranceRef = {
-  utteranceId: number
-  speaker: string | null
-}
-
-export type TranslationRendererEvent =
-  | { type: 'connected'; sessionId: string }
-  | { type: 'input-transcript-delta'; delta: string; elapsedMs?: number }
-  | ({ type: 'input-transcript-snapshot'; text: string } & Partial<CaptionUtteranceRef>)
-  | { type: 'input-transcript-done' }
-  | { type: 'output-transcript-delta'; delta: string; elapsedMs?: number }
-  | ({ type: 'output-transcript-snapshot'; text: string } & Partial<CaptionUtteranceRef>)
-  | { type: 'output-transcript-done' }
-  | { type: 'warning'; message: string }
-  | { type: 'error'; message: string }
-  | { type: 'closed'; code: number; reason: string }
 
 type RealtimeServerEvent = {
   type?: string
@@ -78,7 +61,7 @@ export class RealtimeTranslationSession {
 
   constructor(
     request: TranslationStartRequest,
-    private readonly emit: (event: TranslationRendererEvent) => void
+    private readonly emit: (event: CaptionSessionEvent) => void
   ) {
     this.session = {
       id: crypto.randomUUID(),

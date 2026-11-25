@@ -6,10 +6,10 @@ import { electronApp, optimizer } from '@electron-toolkit/utils'
 import { config as loadEnvFile } from 'dotenv'
 import icon from '../../resources/icon.png?asset'
 import type { AppAudioSelection, CaptureApp, CaptureEvent } from '../shared/capture'
-import type { CaptionOverlayState } from '../shared/captions'
+import type { AudioChunk, CaptionOverlayState, CaptionStartRequest } from '../shared/captions'
 import { AppAudioCapture, isAppAudioCaptureSupported, listCaptureApps } from './appAudioCapture'
 import { CaptionOverlay } from './captionOverlay'
-import { CaptionSession, type CaptionStartRequest } from './captionSession'
+import { CaptionSession, getCaptionProvider } from './captionSession'
 import { loadRendererPage, PRELOAD_PATH } from './rendererPage'
 import {
   translateJapaneseTextToEnglish,
@@ -17,11 +17,6 @@ import {
   type TextTranslationRequest,
   type TextTranslationStreamRequest
 } from './textTranslation'
-
-type StartRequest = CaptionStartRequest & {
-  /** Capture these apps directly instead of receiving audio chunks from the renderer. */
-  appAudio?: AppAudioSelection
-}
 
 let activeTranslation: CaptionSession | null = null
 let activeCapture: AppAudioCapture | null = null
@@ -169,7 +164,7 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  ipcMain.handle('translation:start', async (event, request: StartRequest) => {
+  ipcMain.handle('translation:start', async (event, request: CaptionStartRequest) => {
     await stopActiveSession()
 
     const { appAudio } = request
@@ -209,9 +204,15 @@ app.whenReady().then(() => {
     }
   )
 
-  ipcMain.on('translation:audio-chunk', (_event, chunk: { pcm16Base64: string }) => {
+  ipcMain.on('translation:audio-chunk', (_event, chunk: AudioChunk) => {
     activeTranslation?.sendAudio(Buffer.from(chunk.pcm16Base64, 'base64'))
   })
+
+  ipcMain.on('translation:mic-audio-chunk', (_event, chunk: AudioChunk) => {
+    activeTranslation?.sendMicAudio(Buffer.from(chunk.pcm16Base64, 'base64'))
+  })
+
+  ipcMain.handle('translation:provider', () => getCaptionProvider())
 
   ipcMain.handle('translation:stop', async () => {
     const session = await stopActiveSession()
