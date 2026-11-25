@@ -128,14 +128,10 @@ export class UtteranceAssembler {
     // Once the current utterance has ended, interim words already belong to the next one,
     // which is only created when its first final token arrives.
     const speaking = this.current && !this.current.ended ? this.current : null
-    const liveText = ((speaking?.source ?? '') + interimSource).trim()
-    if (liveText && liveText !== this.lastLiveText) {
-      this.lastLiveText = liveText
-      this.callbacks.onLiveText(liveText, {
-        id: speaking?.id ?? this.nextId,
-        speaker: speaking?.speaker ?? interimSpeaker
-      })
-    }
+    this.emitLiveText((speaking?.source ?? '') + interimSource, {
+      id: speaking?.id ?? this.nextId,
+      speaker: speaking?.speaker ?? interimSpeaker
+    })
 
     this.emitLiveTranslation(interimTranslation)
   }
@@ -151,6 +147,7 @@ export class UtteranceAssembler {
     this.current = null
 
     if (!utterance.ended) {
+      this.emitLiveText(utterance.source, utterance)
       this.lastLiveText = ''
       this.callbacks.onSourceEnded()
     }
@@ -172,6 +169,18 @@ export class UtteranceAssembler {
         source,
         translation
       })
+    }
+  }
+
+  /**
+   * Also called when an utterance ends: its last words can settle in the same response
+   * as the end, without ever having been sent as live text.
+   */
+  private emitLiveText(text: string, utterance: LiveUtteranceRef): void {
+    const liveText = text.trim()
+    if (liveText && liveText !== this.lastLiveText) {
+      this.lastLiveText = liveText
+      this.callbacks.onLiveText(liveText, { id: utterance.id, speaker: utterance.speaker })
     }
   }
 
@@ -230,6 +239,7 @@ export class UtteranceAssembler {
 
   private endSource(): void {
     if (this.current && !this.current.ended) {
+      this.emitLiveText(this.current.source, this.current)
       this.current.ended = true
       this.lastLiveText = ''
       this.callbacks.onSourceEnded()
