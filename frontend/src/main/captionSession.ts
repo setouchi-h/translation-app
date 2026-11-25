@@ -67,7 +67,11 @@ export class CaptionSession {
     if (provider === 'soniox') {
       if (request.microphone) {
         this.microphone = new SonioxTranscriptionSession(
-          { targetLanguage: null, speakerDiarization: false },
+          {
+            targetLanguage: null,
+            speakerDiarization: false,
+            language: request.microphone.language
+          },
           {
             onLiveText: (text, utterance) =>
               this.emit({
@@ -90,7 +94,11 @@ export class CaptionSession {
         )
       }
 
-      const options = { targetLanguage: request.targetLanguage, speakerDiarization: true }
+      const options = {
+        targetLanguage: request.targetLanguage,
+        speakerDiarization: true,
+        language: null
+      }
       this.soniox = new SonioxTranscriptionSession(options, {
         onLiveText: (text, utterance) =>
           this.emit({

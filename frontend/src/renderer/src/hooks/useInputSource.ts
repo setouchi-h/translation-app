@@ -20,6 +20,7 @@ export const APP_SOURCES: Record<AppMode, string> = {
 const SOURCE_STORAGE_KEY = 'inputSource'
 const APP_SELECTIONS_STORAGE_KEY = 'appSelections'
 const MIC_STORAGE_KEY = 'micDevice'
+const MIC_LANGUAGE_STORAGE_KEY = 'micLanguage'
 // Each mode keeps its own apps: the apps worth listening to are not the ones worth muting.
 const DEFAULT_APP_SELECTIONS: AppSelections = {
   include: [{ id: 'com.hnc.Discord', name: 'Discord' }],
@@ -70,6 +71,9 @@ export type InputSource = {
    */
   micDeviceId: string
   selectMic: (deviceId: string) => void
+  /** The one language spoken into the microphone, or '' to identify it automatically. */
+  micLanguage: string
+  selectMicLanguage: (language: string) => void
   /** Reloads devices and apps. Resolves to whether any source is available. */
   refresh: () => Promise<boolean>
 }
@@ -83,6 +87,9 @@ export function useInputSource(): InputSource {
   const [appSelections, setAppSelections] = useState(loadAppSelections)
   const [isMicSupported, setIsMicSupported] = useState(false)
   const [micPreference, setMicPreference] = useState(() => loadPreference(MIC_STORAGE_KEY) ?? '')
+  const [micLanguage, setMicLanguage] = useState(
+    () => loadPreference(MIC_LANGUAGE_STORAGE_KEY) ?? 'en'
+  )
 
   const appMode = appModeOf(source)
   const selectedApps = appMode ? appSelections[appMode] : null
@@ -121,6 +128,11 @@ export function useInputSource(): InputSource {
   const selectMic = (deviceId: string): void => {
     setMicPreference(deviceId)
     storePreference(MIC_STORAGE_KEY, deviceId)
+  }
+
+  const selectMicLanguage = (language: string): void => {
+    setMicLanguage(language)
+    storePreference(MIC_LANGUAGE_STORAGE_KEY, language)
   }
 
   // The stored choice is kept as is, so it comes back when the device is plugged in again.
@@ -201,6 +213,8 @@ export function useInputSource(): InputSource {
     isMicSupported,
     micDeviceId,
     selectMic,
+    micLanguage,
+    selectMicLanguage,
     refresh
   }
 }

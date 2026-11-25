@@ -265,6 +265,8 @@ export type SonioxSessionOptions = {
   targetLanguage: string | null
   /** Off for a source known to be a single speaker. */
   speakerDiarization: boolean
+  /** The language spoken, to restrict recognition to it, or null to identify it. */
+  language: string | null
 }
 
 export class SonioxTranscriptionSession {
@@ -307,6 +309,10 @@ export class SonioxTranscriptionSession {
         enable_speaker_diarization: this.options.speakerDiarization,
         enable_language_identification: true,
         enable_endpoint_detection: true,
+        ...(this.options.language && {
+          language_hints: [this.options.language],
+          language_hints_strict: true
+        }),
         ...(this.options.targetLanguage && {
           translation: {
             type: 'one_way',

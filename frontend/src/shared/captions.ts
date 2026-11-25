@@ -31,8 +31,12 @@ export type CaptionStartRequest = {
   inputDeviceId: string
   targetLanguage: string
   saveTranscript?: boolean
-  /** Also transcribe the user's microphone, sent as separate audio chunks. Needs Soniox. */
-  microphone?: boolean
+  /**
+   * Also transcribe the user's microphone, sent as separate audio chunks. Needs Soniox.
+   * `language` is the one language spoken into it, or null to identify it automatically,
+   * which goes wrong on short or accented speech.
+   */
+  microphone?: { language: string | null }
   /** When set, the main process captures these apps and no audio chunks need to be sent. */
   appAudio?: AppAudioSelection
 }

@@ -22,7 +22,7 @@ type TextTranslationEvent =
   | { type: 'done'; requestId: number; text: string; model: string }
   | { type: 'error'; requestId: number; message: string }
 
-const TARGET_LANGUAGES = [
+const LANGUAGES = [
   { value: 'ja', label: 'Japanese' },
   { value: 'en', label: 'English' },
   { value: 'ko', label: 'Korean' },
@@ -247,7 +247,7 @@ function App(): React.JSX.Element {
         inputDeviceId: input.source || 'default',
         targetLanguage,
         saveTranscript,
-        microphone: micStream !== null,
+        microphone: micStream ? { language: input.micLanguage || null } : undefined,
         appAudio: input.appAudio ?? undefined
       })
       setIsSavingTranscript(session.transcriptPath !== null)
@@ -553,13 +553,30 @@ function App(): React.JSX.Element {
         </label>
 
         <label className="field">
+          <span>My language</span>
+          <select
+            value={input.micLanguage}
+            onChange={(event) => input.selectMicLanguage(event.target.value)}
+            disabled={isBusy || !input.micDeviceId}
+            title="The language you speak. Auto guesses it per utterance, which goes wrong on short or accented speech."
+          >
+            {LANGUAGES.map((language) => (
+              <option key={language.value} value={language.value}>
+                {language.label}
+              </option>
+            ))}
+            <option value="">Auto</option>
+          </select>
+        </label>
+
+        <label className="field">
           <span>Target</span>
           <select
             value={targetLanguage}
             onChange={(event) => setTargetLanguage(event.target.value)}
             disabled={isBusy}
           >
-            {TARGET_LANGUAGES.map((language) => (
+            {LANGUAGES.map((language) => (
               <option key={language.value} value={language.value}>
                 {language.label}
               </option>
